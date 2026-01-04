@@ -161,6 +161,11 @@
             font-size: 0.85em;
             color: #94a3b8;
         }
+        
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
@@ -388,8 +393,8 @@
                                     <div class="row">
                                         <div class="col-md-6 mb-3">
                                             <label for="daysValid" class="form-label">Validity Period (days)</label>
-                                            <input type="number" class="form-control" id="daysValid" value="30" min="1" max="3650" required>
-                                            <div class="form-text">License will expire after this many days</div>
+                                            <input type="number" class="form-control" id="daysValid" value="30" min="1" max="3650" required oninput="validateDays(this)">
+                                            <div class="form-text">License will expire after this many days (1-3650)</div>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label for="licenseNote" class="form-label">Note (optional)</label>
@@ -597,10 +602,20 @@ fi</code></pre>
             const savedApiKey = localStorage.getItem('license_admin_api_key');
             if (savedApiKey) {
                 API_KEY = savedApiKey;
+                document.getElementById('currentApiKey').textContent = savedApiKey;
                 // Verify API key is still valid
                 verifyApiKey(savedApiKey);
             }
         });
+
+        // ============== VALIDATION FUNCTIONS ==============
+        
+        // Validate days input
+        function validateDays(input) {
+            const value = parseInt(input.value) || 30;
+            if (value < 1) input.value = 1;
+            if (value > 3650) input.value = 3650;
+        }
 
         // ============== SYSTEM SETUP FUNCTIONS ==============
         
@@ -780,6 +795,7 @@ fi</code></pre>
                 
                 if (response.ok) {
                     API_KEY = apiKey;
+                    document.getElementById('currentApiKey').textContent = apiKey;
                     showMainPanel();
                     loadStats();
                 } else {
@@ -977,16 +993,23 @@ fi</code></pre>
             }
         }
 
-        // Create license
+        // Create license - FIXED: Convert days to number
         document.getElementById('createForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
-            const daysValid = document.getElementById('daysValid').value;
+            // FIX: Convert to number
+            const daysValid = parseInt(document.getElementById('daysValid').value) || 30;
             const note = document.getElementById('licenseNote').value;
+            
+            // Validate
+            if (daysValid < 1 || daysValid > 3650) {
+                showToast('Please enter valid days (1-3650)', 'warning');
+                return;
+            }
             
             try {
                 const result = await apiRequest('/api/admin/licenses/create', 'POST', {
-                    days_valid: daysValid,
+                    days_valid: daysValid,  // Sending as number
                     note: note
                 });
                 
@@ -1003,11 +1026,12 @@ fi</code></pre>
                         </div>
                     `;
                     loadStats();
+                    showToast('✅ License created!', 'success');
                 } else {
-                    showToast('Failed to create license', 'danger');
+                    showToast(`❌ Failed: ${result.error || 'Unknown error'}`, 'danger');
                 }
             } catch (error) {
-                showToast('Error: ' + error.message, 'danger');
+                showToast(`⚠️ Error: ${error.message}`, 'danger');
             }
         });
 
@@ -1181,6 +1205,7 @@ fi</code></pre>
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('license_admin_api_key');
                 API_KEY = '';
+                document.getElementById('currentApiKey').textContent = '';
                 document.getElementById('mainSections').style.display = 'none';
                 document.getElementById('loginSection').style.display = 'block';
                 document.getElementById('username').value = 'admin';
