@@ -84,7 +84,7 @@ def init_db():
         # Thêm admin mặc định nếu chưa có
         cursor.execute("SELECT COUNT(*) as count FROM admin_users")
         if cursor.fetchone()[0] == 0:
-            password_hash = argon2_hasher.hash("Anhhuykute123")
+            password_hash = argon2_hasher.hash("Ccmscnlk123")
             cursor.execute(
                 "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
                 ("admin", password_hash)
@@ -238,7 +238,7 @@ def setup_system():
     
     elif action == 'reset_admin':
         # Reset admin password
-        password_hash = argon2_hasher.hash("Anhhuykute123")
+        password_hash = argon2_hasher.hash("Ccmscnlk")
         cursor.execute(
             "INSERT OR REPLACE INTO admin_users (username, password_hash) VALUES (?, ?)",
             ("admin", password_hash)
@@ -247,7 +247,7 @@ def setup_system():
         
         return jsonify({
             'success': True,
-            'message': 'Admin password reset to: Anhhuykute123'
+            'message': 'Admin password reset to: Anhhuy'
         })
     
     return jsonify({'success': False, 'message': 'Invalid action'})
