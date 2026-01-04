@@ -97,7 +97,7 @@ def init_db():
                 "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
                 (default_api_key, "Default API Key", "all")
             )
-            print(f"✅ Default API Key created: {default_api_key}")
+            print(f"✅ Default API Key created: {default_api_key[:12]}...")
         
         db.commit()
         print("✅ Database initialized successfully!")
@@ -130,17 +130,20 @@ def index():
         <head>
             <title>License Admin</title>
             <style>
-                body { font-family: Arial; padding: 20px; }
+                body { font-family: Arial; padding: 20px; background: #0f172a; color: white; }
                 .container { max-width: 800px; margin: 0 auto; }
                 .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+                .card { background: #1e293b; padding: 20px; border-radius: 10px; margin: 20px 0; }
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>📋 License Admin Panel</h1>
-                <p>System is running! API endpoints are active.</p>
-                <p><a href="/api/admin/debug" target="_blank">Check System Status</a></p>
-                <p><button class="btn" onclick="window.location.reload()">Reload Page</button></p>
+                <div class="card">
+                    <p>System is running! API endpoints are active.</p>
+                    <p><a href="/api/admin/debug" target="_blank" style="color: #4cc9f0;">Check System Status</a></p>
+                    <p><button class="btn" onclick="window.location.reload()">Reload Page</button></p>
+                </div>
             </div>
         </body>
         </html>
@@ -289,11 +292,26 @@ def get_all_licenses():
 
 @app.route('/api/admin/licenses/create', methods=['POST'])
 def create_license():
+    """Create new license - FIXED: Convert days_valid to int"""
     if not validate_api_key():
         return jsonify({'error': 'Invalid API key'}), 401
     
     data = request.json
-    days_valid = data.get('days_valid', 30)
+    if not data:
+        return jsonify({'success': False, 'error': 'No data received'}), 400
+    
+    # FIX: Convert days_valid to integer safely
+    try:
+        days_valid = int(data.get('days_valid', 30))
+    except (ValueError, TypeError):
+        days_valid = 30
+    
+    # Ensure days_valid is positive
+    if days_valid <= 0:
+        days_valid = 30
+    if days_valid > 3650:  # Max 10 years
+        days_valid = 3650
+    
     note = data.get('note', '')
     
     license_key = generate_license_key()
