@@ -3,6 +3,7 @@ import sqlite3
 import json
 import uuid
 import hashlib
+import re
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, g, send_file
 from flask_cors import CORS
@@ -54,7 +55,8 @@ def init_db():
                 device_info TEXT,
                 note TEXT,
                 is_locked INTEGER DEFAULT 0,
-                lock_reason TEXT
+                lock_reason TEXT,
+                key_type TEXT DEFAULT 'auto'
             )
         ''')
         
@@ -115,6 +117,25 @@ def validate_api_key():
 
 def generate_license_key():
     return f"LIC-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}"
+
+def validate_custom_key_format(key):
+    """Validate custom license key format"""
+    # Basic validation
+    if len(key) < 8:
+        return False, "Key must be at least 8 characters"
+    
+    # Only allow uppercase letters, numbers, and dashes
+    if not re.match(r'^[A-Z0-9-]+$', key):
+        return False, "Only uppercase letters, numbers, and dashes allowed"
+    
+    # Check if key already exists
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT COUNT(*) FROM licenses WHERE license_key = ?", (key,))
+    if cursor.fetchone()[0] > 0:
+        return False, "This key already exists"
+    
+    return True, "Valid key format"
 
 # ============== ROUTES ==============
 @app.route('/')
@@ -292,7 +313,7 @@ def get_all_licenses():
 
 @app.route('/api/admin/licenses/create', methods=['POST'])
 def create_license():
-    """Create new license - FIXED: Convert days_valid to int"""
+    """Create new license với option custom key"""
     if not validate_api_key():
         return jsonify({'error': 'Invalid API key'}), 401
     
@@ -300,21 +321,33 @@ def create_license():
     if not data:
         return jsonify({'success': False, 'error': 'No data received'}), 400
     
-    # FIX: Convert days_valid to integer safely
+    # Get parameters
     try:
         days_valid = int(data.get('days_valid', 30))
     except (ValueError, TypeError):
         days_valid = 30
     
-    # Ensure days_valid is positive
+    # Ensure valid range
     if days_valid <= 0:
         days_valid = 30
-    if days_valid > 3650:  # Max 10 years
+    if days_valid > 3650:
         days_valid = 3650
     
     note = data.get('note', '')
+    custom_key = data.get('custom_key', '')
+    key_type = 'custom' if custom_key else 'auto'
     
-    license_key = generate_license_key()
+    # Determine which key to use
+    if custom_key:
+        # Validate custom key
+        is_valid, message = validate_custom_key_format(custom_key)
+        if not is_valid:
+            return jsonify({'success': False, 'error': f'Invalid custom key: {message}'}), 400
+        license_key = custom_key.upper()
+    else:
+        # Generate auto key
+        license_key = generate_license_key()
+    
     expires_at = datetime.now() + timedelta(days=days_valid)
     
     db = get_db()
@@ -322,18 +355,80 @@ def create_license():
     
     try:
         cursor.execute('''
-            INSERT INTO licenses (license_key, expires_at, note, status)
-            VALUES (?, ?, ?, 'active')
-        ''', (license_key, expires_at, note))
+            INSERT INTO licenses (license_key, expires_at, note, status, key_type)
+            VALUES (?, ?, ?, 'active', ?)
+        ''', (license_key, expires_at, note, key_type))
         
         db.commit()
         return jsonify({
             'success': True,
             'license_key': license_key,
             'expires_at': expires_at.isoformat(),
-            'message': 'License created successfully'
+            'message': 'License created successfully',
+            'key_type': key_type
         })
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'error': 'License key already exists'}), 400
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/api/admin/licenses/bulk', methods=['POST'])
+def bulk_create_licenses():
+    """Create multiple licenses with prefix"""
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    if not data:
+        return jsonify({'success': False, 'error': 'No data received'}), 400
+    
+    # Get parameters
+    try:
+        count = int(data.get('count', 5))
+        days_valid = int(data.get('days_valid', 30))
+        prefix = data.get('prefix', 'VIP').upper().replace(' ', '-')
+        note = data.get('note', 'Bulk generated')
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Invalid parameters'}), 400
+    
+    # Validate
+    if count < 1 or count > 100:
+        return jsonify({'success': False, 'error': 'Count must be between 1-100'}), 400
+    if days_valid <= 0 or days_valid > 3650:
+        return jsonify({'success': False, 'error': 'Invalid days valid'}), 400
+    
+    created_keys = []
+    db = get_db()
+    cursor = db.cursor()
+    
+    try:
+        for i in range(count):
+            # Generate key with prefix
+            unique_part = f"{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
+            license_key = f"{prefix}-{unique_part}"
+            expires_at = datetime.now() + timedelta(days=days_valid)
+            
+            # Insert into database
+            cursor.execute('''
+                INSERT INTO licenses (license_key, expires_at, note, status, key_type)
+                VALUES (?, ?, ?, 'active', 'bulk')
+            ''', (license_key, expires_at, f"{note} #{i+1}", 'active'))
+            
+            created_keys.append({
+                'key': license_key,
+                'expires_at': expires_at.isoformat()
+            })
+        
+        db.commit()
+        return jsonify({
+            'success': True,
+            'count': count,
+            'keys': created_keys,
+            'message': f'Successfully created {count} license(s)'
+        })
+        
+    except Exception as e:
+        db.rollback()
         return jsonify({'success': False, 'error': str(e)}), 400
 
 @app.route('/api/admin/licenses/reset', methods=['POST'])
@@ -628,11 +723,16 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) as expired FROM licenses WHERE expires_at < datetime('now')")
     expired = cursor.fetchone()[0]
     
+    # Count by key type
+    cursor.execute("SELECT key_type, COUNT(*) as count FROM licenses GROUP BY key_type")
+    key_types = {row['key_type']: row['count'] for row in cursor.fetchall()}
+    
     return jsonify({
         'total_licenses': total,
         'active_licenses': active,
         'locked_licenses': locked,
-        'expired_licenses': expired
+        'expired_licenses': expired,
+        'key_types': key_types
     })
 
 # ============== INITIALIZE & RUN ==============
