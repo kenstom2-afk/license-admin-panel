@@ -141,12 +141,25 @@
         }
         
         #loginSection {
-            max-width: 400px;
-            margin: 100px auto;
+            max-width: 450px;
+            margin: 80px auto;
         }
         
         #mainSections {
             display: none;
+        }
+        
+        .setup-box {
+            border: 2px dashed #4cc9f0;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+            background: rgba(76, 201, 240, 0.1);
+        }
+        
+        .debug-info {
+            font-size: 0.85em;
+            color: #94a3b8;
         }
     </style>
 </head>
@@ -158,9 +171,9 @@
                 <i class="bi bi-shield-lock-fill me-2"></i>License Admin Panel
             </a>
             <div class="d-flex">
-                <span class="badge bg-success me-3" id="apiStatus">API: Ready</span>
-                <button class="btn btn-sm btn-outline-light" onclick="toggleDarkMode()">
-                    <i class="bi bi-moon"></i>
+                <span class="badge bg-success me-3" id="apiStatus">API: Checking...</span>
+                <button class="btn btn-sm btn-outline-light" onclick="checkSystemStatus()">
+                    <i class="bi bi-heart-pulse"></i>
                 </button>
             </div>
         </div>
@@ -175,6 +188,27 @@
                     <h4 class="mb-0 text-white"><i class="bi bi-lock-fill me-2"></i> Admin Login</h4>
                 </div>
                 <div class="card-body">
+                    <!-- System Status -->
+                    <div class="setup-box mb-3">
+                        <h6><i class="bi bi-info-circle me-2"></i> System Status</h6>
+                        <div class="debug-info" id="systemStatus">
+                            Checking system status...
+                        </div>
+                        <button class="btn btn-sm btn-outline-info mt-2 w-100" onclick="checkSystemStatus()">
+                            <i class="bi bi-arrow-clockwise me-1"></i> Refresh Status
+                        </button>
+                    </div>
+                    
+                    <!-- Setup Warning -->
+                    <div class="alert alert-warning" id="setupAlert" style="display: none;">
+                        <strong><i class="bi bi-exclamation-triangle me-2"></i> Setup Required:</strong>
+                        <span id="setupMessage"></span>
+                        <button class="btn btn-sm btn-warning mt-2" onclick="fixSetupIssue()">
+                            <i class="bi bi-tools me-1"></i> Fix Automatically
+                        </button>
+                    </div>
+                    
+                    <!-- Login Form -->
                     <div class="alert alert-info">
                         <strong><i class="bi bi-info-circle me-2"></i> Default Credentials:</strong><br>
                         Username: <code>admin</code><br>
@@ -183,21 +217,45 @@
                     <form id="loginForm">
                         <div class="mb-3">
                             <label for="username" class="form-label">Username</label>
-                            <input type="text" class="form-control" id="username" required>
+                            <input type="text" class="form-control" id="username" value="admin" required>
                         </div>
                         <div class="mb-3">
                             <label for="password" class="form-label">Password</label>
-                            <input type="password" class="form-control" id="password" required>
+                            <input type="password" class="form-control" id="password" value="admin123" required>
                         </div>
                         <button type="submit" class="btn btn-primary-custom w-100">
                             <i class="bi bi-box-arrow-in-right me-2"></i> Login
                         </button>
                     </form>
+                    
+                    <!-- Quick Actions -->
                     <div class="text-center mt-3">
-                        <button class="btn btn-sm btn-success" onclick="testAutoLogin()">
-                            <i class="bi bi-play-fill me-1"></i> Test Auto Login
+                        <button class="btn btn-sm btn-success me-2" onclick="quickLogin()">
+                            <i class="bi bi-lightning-fill me-1"></i> Quick Login
+                        </button>
+                        <button class="btn btn-sm btn-warning" onclick="showDebugTools()">
+                            <i class="bi bi-bug me-1"></i> Debug Tools
                         </button>
                     </div>
+                </div>
+            </div>
+            
+            <!-- Debug Tools (hidden) -->
+            <div class="card card-custom mt-3" id="debugTools" style="display: none;">
+                <div class="card-body">
+                    <h6><i class="bi bi-tools me-2"></i> Debug Tools</h6>
+                    <div class="btn-group w-100">
+                        <button class="btn btn-sm btn-outline-info" onclick="testApiConnection()">
+                            Test API
+                        </button>
+                        <button class="btn btn-sm btn-outline-warning" onclick="createApiKeyManually()">
+                            Create API Key
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="resetDatabase()">
+                            Reset DB
+                        </button>
+                    </div>
+                    <div id="debugResult" class="mt-2"></div>
                 </div>
             </div>
         </div>
@@ -396,9 +454,12 @@
                                 </button>
                             </div>
                             <div class="card-body">
-                                <div class="alert alert-warning">
-                                    <strong><i class="bi bi-exclamation-triangle me-2"></i> Important:</strong> 
-                                    API keys are used to authenticate API requests. Keep them secret!
+                                <div class="alert alert-info">
+                                    <strong><i class="bi bi-key me-2"></i> Current API Key:</strong>
+                                    <code class="license-key d-block mt-2" id="currentApiKey">Loading...</code>
+                                    <button class="btn btn-sm btn-success mt-2" onclick="copyCurrentApiKey()">
+                                        <i class="bi bi-copy me-1"></i> Copy to Clipboard
+                                    </button>
                                 </div>
                                 <div class="table-responsive">
                                     <table class="table table-custom">
@@ -491,16 +552,16 @@ API_URL="''' + window.location.origin + '''/api/client/validate"
 LICENSE_KEY="YOUR_LICENSE_KEY"
 HWID=$(getprop ro.serialno)
 
-response=$(curl -s -X POST "$API_URL" \\
-    -H "Content-Type: application/json" \\
-    -d "{\\"license_key\\":\\"$LICENSE_KEY\\",\\"hwid\\":\\"$HWID\\"}")
+response=$(curl -s -X POST "$API_URL" \
+    -H "Content-Type: application/json" \
+    -d "{\"license_key\":\"$LICENSE_KEY\",\"hwid\":\"$HWID\",\"device_info\":\"Android Device\"}")
 
 valid=$(echo $response | grep -o '"valid":[^,]*' | cut -d: -f2)
 if [ "$valid" = "true" ]; then
-    echo "License valid"
+    echo "✓ License valid"
     exit 0
 else
-    echo "License invalid"
+    echo "✗ License invalid"
     exit 1
 fi</code></pre>
                                     </div>
@@ -529,18 +590,151 @@ fi</code></pre>
         document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('baseApiUrl').textContent = API_BASE;
             
+            // Check system status on load
+            checkSystemStatus();
+            
             // Check for saved API key
             const savedApiKey = localStorage.getItem('license_admin_api_key');
             if (savedApiKey) {
                 API_KEY = savedApiKey;
-                showMainPanel();
-                loadStats();
+                // Verify API key is still valid
+                verifyApiKey(savedApiKey);
             }
-            
-            // Test API connection
-            testApiConnection();
         });
 
+        // ============== SYSTEM SETUP FUNCTIONS ==============
+        
+        // Check system status
+        async function checkSystemStatus() {
+            try {
+                const response = await fetch(API_BASE + '/api/admin/debug');
+                const data = await response.json();
+                
+                document.getElementById('systemStatus').innerHTML = `
+                    <div class="mb-1">• Database Tables: ${data.database_tables.join(', ')}</div>
+                    <div class="mb-1">• Admin Users: ${data.counts.admin_users}</div>
+                    <div class="mb-1">• API Keys: ${data.counts.api_keys}</div>
+                    <div class="mb-1">• Licenses: ${data.counts.licenses}</div>
+                    ${data.api_key_info ? `<div>• API Key: ${data.api_key_info.key_masked}</div>` : ''}
+                `;
+                
+                // Update API status badge
+                if (data.counts.api_keys > 0) {
+                    document.getElementById('apiStatus').className = 'badge bg-success me-3';
+                    document.getElementById('apiStatus').textContent = 'API: Ready';
+                    document.getElementById('setupAlert').style.display = 'none';
+                } else {
+                    document.getElementById('apiStatus').className = 'badge bg-danger me-3';
+                    document.getElementById('apiStatus').textContent = 'API: No Keys';
+                    document.getElementById('setupMessage').textContent = 'No API keys found in database.';
+                    document.getElementById('setupAlert').style.display = 'block';
+                }
+                
+                return data;
+            } catch (error) {
+                document.getElementById('systemStatus').innerHTML = 
+                    `<div class="text-danger">❌ Error: ${error.message}</div>`;
+                document.getElementById('apiStatus').className = 'badge bg-danger me-3';
+                document.getElementById('apiStatus').textContent = 'API: Offline';
+                return null;
+            }
+        }
+
+        // Fix setup issues automatically
+        async function fixSetupIssue() {
+            try {
+                const response = await fetch(API_BASE + '/api/admin/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'create_key' })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    showToast('✅ API key created successfully!', 'success');
+                    // Auto-login with new key
+                    quickLogin();
+                } else {
+                    showToast('❌ Failed to create API key', 'danger');
+                }
+                checkSystemStatus();
+            } catch (error) {
+                showToast('Error: ' + error.message, 'danger');
+            }
+        }
+
+        // Quick login (auto setup)
+        async function quickLogin() {
+            document.getElementById('username').value = 'admin';
+            document.getElementById('password').value = 'admin123';
+            
+            // Check system first
+            const status = await checkSystemStatus();
+            if (status && status.counts.api_keys === 0) {
+                // No API keys, create one first
+                await fixSetupIssue();
+            } else {
+                // Submit login form
+                document.getElementById('loginForm').dispatchEvent(new Event('submit'));
+            }
+        }
+
+        // Show debug tools
+        function showDebugTools() {
+            const debugTools = document.getElementById('debugTools');
+            debugTools.style.display = debugTools.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Test API connection
+        async function testApiConnection() {
+            const resultDiv = document.getElementById('debugResult');
+            resultDiv.innerHTML = '<div class="text-info">Testing API connection...</div>';
+            
+            try {
+                const response = await fetch(API_BASE + '/api/admin/debug');
+                const data = await response.json();
+                resultDiv.innerHTML = `
+                    <div class="alert alert-success">
+                        <strong>✅ API Connection Successful!</strong><br>
+                        Status: ${data.status}<br>
+                        Message: ${data.message}
+                    </div>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <strong>❌ API Connection Failed!</strong><br>
+                        Error: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Create API key manually
+        async function createApiKeyManually() {
+            const name = prompt('Enter API Key name:', 'Manual Key');
+            if (!name) return;
+            
+            try {
+                const response = await fetch(API_BASE + '/api/admin/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'create_key', name: name })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert(`✅ API Key Created!\n\n${data.api_key}\n\nSave this key!`);
+                    copyToClipboard(data.api_key);
+                    checkSystemStatus();
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'danger');
+            }
+        }
+
+        // ============== LOGIN & AUTH FUNCTIONS ==============
+        
         // Login Form
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -558,67 +752,47 @@ fi</code></pre>
                 const data = await response.json();
                 
                 if (data.success) {
-                    // Get API keys
-                    const apiKeys = await getApiKeys();
-                    if (apiKeys.length > 0) {
-                        API_KEY = apiKeys[0].key;
-                        localStorage.setItem('license_admin_api_key', API_KEY);
-                        showMainPanel();
-                        loadStats();
-                        showToast('Login successful!', 'success');
-                    } else {
-                        showToast('No API keys found', 'warning');
-                    }
+                    // Save API key
+                    API_KEY = data.api_key;
+                    localStorage.setItem('license_admin_api_key', API_KEY);
+                    
+                    // Update current API key display
+                    document.getElementById('currentApiKey').textContent = data.api_key;
+                    
+                    // Show main panel
+                    showMainPanel();
+                    loadStats();
+                    showToast('✅ Login successful!', 'success');
                 } else {
-                    showToast('Login failed: ' + data.message, 'danger');
+                    showToast('❌ Login failed: ' + data.message, 'danger');
                 }
             } catch (error) {
-                showToast('Login error: ' + error.message, 'danger');
+                showToast('⚠️ Login error: ' + error.message, 'danger');
             }
         });
 
-        // Test auto login
-        function testAutoLogin() {
-            document.getElementById('username').value = 'admin';
-            document.getElementById('password').value = 'admin123';
-            showToast('Credentials filled. Click Login button.', 'info');
-        }
-
-        // API Helper
-        async function apiRequest(endpoint, method = 'GET', body = null) {
-            const headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': API_KEY
-            };
-            
-            const options = {
-                method,
-                headers
-            };
-            
-            if (body) {
-                options.body = JSON.stringify(body);
-            }
-            
-            const response = await fetch(API_BASE + endpoint, options);
-            if (response.status === 401) {
-                showToast('Invalid API key', 'danger');
-                return null;
-            }
-            return await response.json();
-        }
-
-        // Get API Keys
-        async function getApiKeys() {
+        // Verify API key
+        async function verifyApiKey(apiKey) {
             try {
-                const data = await apiRequest('/api/admin/apikeys');
-                return data?.api_keys || [];
+                const response = await fetch(API_BASE + '/api/admin/stats', {
+                    headers: { 'X-API-Key': apiKey }
+                });
+                
+                if (response.ok) {
+                    API_KEY = apiKey;
+                    showMainPanel();
+                    loadStats();
+                } else {
+                    localStorage.removeItem('license_admin_api_key');
+                    showToast('Session expired. Please login again.', 'warning');
+                }
             } catch (error) {
-                console.error('Error getting API keys:', error);
-                return [];
+                localStorage.removeItem('license_admin_api_key');
             }
         }
 
+        // ============== MAIN PANEL FUNCTIONS ==============
+        
         // Show main panel
         function showMainPanel() {
             document.getElementById('loginSection').style.display = 'none';
@@ -664,6 +838,31 @@ fi</code></pre>
             } catch (error) {
                 console.error('Error loading stats:', error);
             }
+        }
+
+        // API Helper
+        async function apiRequest(endpoint, method = 'GET', body = null) {
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': API_KEY
+            };
+            
+            const options = {
+                method,
+                headers
+            };
+            
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            const response = await fetch(API_BASE + endpoint, options);
+            if (response.status === 401) {
+                showToast('Invalid API key', 'danger');
+                logout();
+                return null;
+            }
+            return await response.json();
         }
 
         // Load recent licenses
@@ -820,7 +1019,7 @@ fi</code></pre>
             try {
                 const result = await apiRequest('/api/admin/apikeys/create', 'POST', { name: name });
                 if (result?.success) {
-                    alert(`API Key created!\n\n${result.api_key}\n\nSave this key now - it won't be shown again!`);
+                    alert(`✅ API Key created!\n\n${result.api_key}\n\nSave this key now - it won't be shown again!`);
                     copyToClipboard(result.api_key);
                     loadApiKeys();
                 } else {
@@ -828,6 +1027,15 @@ fi</code></pre>
                 }
             } catch (error) {
                 showToast('Error: ' + error.message, 'danger');
+            }
+        }
+
+        // Copy current API key
+        function copyCurrentApiKey() {
+            if (API_KEY) {
+                copyToClipboard(API_KEY);
+            } else {
+                showToast('No API key available', 'warning');
             }
         }
 
@@ -908,7 +1116,7 @@ fi</code></pre>
                     resultDiv.innerHTML = `
                         <div class="alert alert-success">
                             <i class="bi bi-check-circle me-2"></i>
-                            <strong>Success!</strong> ${data.message}<br>
+                            <strong>✅ Success!</strong> ${data.message}<br>
                             ${data.expires_at ? `<small>Expires: ${formatDate(data.expires_at)}</small>` : ''}
                         </div>
                     `;
@@ -916,7 +1124,7 @@ fi</code></pre>
                     resultDiv.innerHTML = `
                         <div class="alert alert-danger">
                             <i class="bi bi-x-circle me-2"></i>
-                            <strong>Failed!</strong> ${data.message}
+                            <strong>❌ Failed!</strong> ${data.message}
                         </div>
                     `;
                 }
@@ -924,7 +1132,7 @@ fi</code></pre>
                 resultDiv.innerHTML = `
                     <div class="alert alert-danger">
                         <i class="bi bi-x-circle me-2"></i>
-                        <strong>Error:</strong> ${error.message}
+                        <strong>⚠️ Error:</strong> ${error.message}
                     </div>
                 `;
             }
@@ -943,7 +1151,9 @@ fi</code></pre>
 
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(() => {
-                showToast('Copied to clipboard!', 'success');
+                showToast('✅ Copied to clipboard!', 'success');
+            }).catch(() => {
+                showToast('❌ Failed to copy', 'danger');
             });
         }
 
@@ -967,42 +1177,22 @@ fi</code></pre>
             });
         }
 
-        function testApiConnection() {
-            fetch(API_BASE + '/api/admin/stats')
-                .then(response => {
-                    if (response.ok) {
-                        document.getElementById('apiStatus').className = 'badge bg-success me-3';
-                        document.getElementById('apiStatus').textContent = 'API: Online';
-                    } else {
-                        document.getElementById('apiStatus').className = 'badge bg-danger me-3';
-                        document.getElementById('apiStatus').textContent = 'API: Error';
-                    }
-                })
-                .catch(() => {
-                    document.getElementById('apiStatus').className = 'badge bg-danger me-3';
-                    document.getElementById('apiStatus').textContent = 'API: Offline';
-                });
-        }
-
-        function toggleDarkMode() {
-            document.body.classList.toggle('dark-mode');
-        }
-
         function logout() {
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('license_admin_api_key');
                 API_KEY = '';
                 document.getElementById('mainSections').style.display = 'none';
                 document.getElementById('loginSection').style.display = 'block';
-                document.getElementById('username').value = '';
-                document.getElementById('password').value = '';
+                document.getElementById('username').value = 'admin';
+                document.getElementById('password').value = 'admin123';
+                checkSystemStatus();
                 showToast('Logged out successfully', 'info');
             }
         }
 
-        // Load dashboard on startup if logged in
+        // On page load, check if already logged in
         if (API_KEY) {
-            showMainPanel();
+            verifyApiKey(API_KEY);
         }
     </script>
 </body>
