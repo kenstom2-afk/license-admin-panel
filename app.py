@@ -89,7 +89,7 @@ def init_db():
                 "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
                 ("admin", password_hash)
             )
-            print("✅ Default admin user created: admin / Anhhuykute123")
+            print("✅ Default admin user created: admin / Admin123")
         
         # ĐẢM BẢO LUÔN CÓ ÍT NHẤT 1 API KEY
         cursor.execute("SELECT COUNT(*) as count FROM api_keys")
