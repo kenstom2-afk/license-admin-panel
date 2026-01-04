@@ -1,206 +1,1516 @@
-# THÊM DÒNG NÀY Ở ĐẦU FILE (sau imports):
 import os
+import sqlite3
+import json
+import uuid
+import hashlib
+from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, g
+from flask_cors import CORS
+from cryptography.fernet import Fernet
+import base64
+import argon2
 
-# VÀ SỬA HÀM index() - TÌM DÒNG NÀY:
+app = Flask(__name__)
+CORS(app)
+
+# IMPORTANT: Use environment variable or default for Render
+app.secret_key = os.environ.get('SECRET_KEY', 'your-super-secret-key-change-this-in-production-12345')
+
+# Cấu hình database
+DATABASE = 'licenses.db'
+
+# Khởi tạo Argon2
+argon2_hasher = argon2.PasswordHasher()
+
+# ============== DATABASE FUNCTIONS ==============
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
+    return db
+
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    with app.app_context():
+        db = get_db()
+        cursor = db.cursor()
+        
+        # Tạo bảng licenses
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS licenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key TEXT UNIQUE NOT NULL,
+                hwid TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                last_check TIMESTAMP,
+                device_info TEXT,
+                note TEXT,
+                is_locked INTEGER DEFAULT 0,
+                lock_reason TEXT
+            )
+        ''')
+        
+        # Tạo bảng admin_users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Tạo bảng api_keys
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                permissions TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Thêm admin mặc định nếu chưa có
+        cursor.execute("SELECT COUNT(*) as count FROM admin_users")
+        if cursor.fetchone()[0] == 0:
+            password_hash = argon2_hasher.hash("admin123")
+            cursor.execute(
+                "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+                ("admin", password_hash)
+            )
+        
+        # Thêm API key mặc định
+        cursor.execute("SELECT COUNT(*) as count FROM api_keys")
+        if cursor.fetchone()[0] == 0:
+            default_api_key = f"sk_{uuid.uuid4().hex[:32]}"
+            cursor.execute(
+                "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+                (default_api_key, "Default API Key", "all")
+            )
+        
+        db.commit()
+
+# ============== HELPER FUNCTIONS ==============
+def validate_api_key():
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return False
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM api_keys WHERE key = ?", (api_key,))
+    return cursor.fetchone() is not None
+
+def generate_license_key():
+    return f"LIC-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}"
+
+# ============== ROUTES ==============
 @app.route('/')
 def index():
-    return render_template('admin.html')
-
-# THAY BẰNG:
-@app.route('/')
-def index():
-    # Trả về HTML trực tiếp - không cần template file
     return '''
     <!DOCTYPE html>
-    <html>
+    <html lang="vi">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>License Admin Panel</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
         <style>
-            body { background: #1a1a2e; color: white; font-family: Arial; }
-            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-            .card { background: #162447; border: 1px solid #1f4068; border-radius: 10px; }
-            .btn-primary { background: #4361ee; border: none; }
-            .btn-primary:hover { background: #3a0ca3; }
-            .sidebar { background: #0f3460; min-height: 100vh; }
-            .nav-link { color: #b8c1ec; }
-            .nav-link.active { color: white; background: #1f4068; }
+            :root {
+                --primary: #4361ee;
+                --secondary: #3a0ca3;
+                --success: #4cc9f0;
+                --danger: #f72585;
+                --dark: #1a1a2e;
+                --light: #f8f9fa;
+            }
+            
+            body {
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                color: #e2e8f0;
+                min-height: 100vh;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            }
+            
+            .navbar-brand {
+                font-weight: 700;
+                background: linear-gradient(90deg, var(--primary), var(--success));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            
+            .card-custom {
+                background: rgba(30, 41, 59, 0.8);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 15px;
+                transition: transform 0.3s ease;
+            }
+            
+            .card-custom:hover {
+                transform: translateY(-5px);
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+            }
+            
+            .btn-primary-custom {
+                background: linear-gradient(135deg, var(--primary), var(--secondary));
+                border: none;
+                border-radius: 8px;
+                padding: 10px 25px;
+                font-weight: 600;
+                transition: all 0.3s ease;
+            }
+            
+            .btn-primary-custom:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(67, 97, 238, 0.4);
+            }
+            
+            .table-custom {
+                background: rgba(15, 23, 42, 0.7);
+                border-radius: 10px;
+                overflow: hidden;
+            }
+            
+            .table-custom th {
+                background: rgba(30, 41, 59, 0.9);
+                border: none;
+                color: #94a3b8;
+                font-weight: 600;
+                padding: 15px;
+            }
+            
+            .table-custom td {
+                border-color: rgba(255, 255, 255, 0.1);
+                padding: 12px 15px;
+                vertical-align: middle;
+            }
+            
+            .status-badge {
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 0.8em;
+                font-weight: 600;
+            }
+            
+            .status-active {
+                background: rgba(76, 201, 240, 0.2);
+                color: #4cc9f0;
+                border: 1px solid rgba(76, 201, 240, 0.3);
+            }
+            
+            .status-locked {
+                background: rgba(247, 37, 133, 0.2);
+                color: #f72585;
+                border: 1px solid rgba(247, 37, 133, 0.3);
+            }
+            
+            .license-key {
+                font-family: 'Courier New', monospace;
+                background: rgba(0, 0, 0, 0.3);
+                padding: 8px 12px;
+                border-radius: 6px;
+                border-left: 4px solid var(--success);
+            }
+            
+            .modal-content {
+                background: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 12px;
+            }
+            
+            .form-control, .form-select {
+                background-color: #334155;
+                border: 1px solid #475569;
+                color: #e2e8f0;
+                border-radius: 8px;
+            }
+            
+            .form-control:focus, .form-select:focus {
+                background-color: #334155;
+                border-color: var(--primary);
+                color: #e2e8f0;
+                box-shadow: 0 0 0 0.25rem rgba(67, 97, 238, 0.25);
+            }
+            
+            pre {
+                background: #0f172a;
+                color: #7dd3fc;
+                padding: 15px;
+                border-radius: 8px;
+                border: 1px solid #334155;
+                font-size: 0.9em;
+            }
+            
+            .toast {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 9999;
+            }
+            
+            #loginSection {
+                max-width: 400px;
+                margin: 100px auto;
+            }
+            
+            #mainSections {
+                display: none;
+            }
         </style>
     </head>
     <body>
-        <div class="container-fluid">
-            <div class="row">
-                <!-- Sidebar -->
-                <div class="col-md-3 sidebar p-4">
-                    <h3 class="mb-4">📋 License Admin</h3>
-                    <div class="nav flex-column">
-                        <button class="btn btn-dark mb-2 w-100" onclick="showSection('login')">Login</button>
-                        <button class="btn btn-dark mb-2 w-100" onclick="showSection('create')">Create License</button>
-                        <button class="btn btn-dark mb-2 w-100" onclick="showSection('api')">API Docs</button>
+        <!-- Navigation -->
+        <nav class="navbar navbar-expand-lg navbar-dark border-bottom border-secondary">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="#">
+                    <i class="bi bi-shield-lock-fill me-2"></i>License Admin Panel
+                </a>
+                <div class="d-flex">
+                    <span class="badge bg-success me-3" id="apiStatus">API: Ready</span>
+                    <button class="btn btn-sm btn-outline-light" onclick="toggleDarkMode()">
+                        <i class="bi bi-moon"></i>
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Container -->
+        <div class="container-fluid mt-4">
+            <!-- Login Section -->
+            <div id="loginSection">
+                <div class="card card-custom">
+                    <div class="card-header" style="background: linear-gradient(135deg, var(--primary), var(--secondary));">
+                        <h4 class="mb-0 text-white"><i class="bi bi-lock-fill me-2"></i> Admin Login</h4>
                     </div>
-                    <hr>
-                    <div class="text-muted small">
-                        <p>API Endpoint:<br><code id="apiUrl"></code></p>
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <strong><i class="bi bi-info-circle me-2"></i> Default Credentials:</strong><br>
+                            Username: <code>admin</code><br>
+                            Password: <code>admin123</code>
+                        </div>
+                        <form id="loginForm">
+                            <div class="mb-3">
+                                <label for="username" class="form-label">Username</label>
+                                <input type="text" class="form-control" id="username" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="password" class="form-label">Password</label>
+                                <input type="password" class="form-control" id="password" required>
+                            </div>
+                            <button type="submit" class="btn btn-primary-custom w-100">
+                                <i class="bi bi-box-arrow-in-right me-2"></i> Login
+                            </button>
+                        </form>
+                        <div class="text-center mt-3">
+                            <button class="btn btn-sm btn-success" onclick="testAutoLogin()">
+                                <i class="bi bi-play-fill me-1"></i> Test Auto Login
+                            </button>
+                        </div>
                     </div>
                 </div>
-                
-                <!-- Main Content -->
-                <div class="col-md-9 p-4">
-                    <h2 id="title">License Management System</h2>
-                    <hr>
-                    
-                    <!-- Login Section -->
-                    <div id="loginSection">
-                        <div class="card p-4">
-                            <h4>🔐 Admin Login</h4>
-                            <div class="alert alert-info">
-                                <strong>Default Credentials:</strong><br>
-                                Username: <code>admin</code><br>
-                                Password: <code>admin123</code>
+            </div>
+
+            <!-- Main Dashboard (hidden initially) -->
+            <div id="mainSections">
+                <div class="row">
+                    <!-- Sidebar -->
+                    <div class="col-lg-3 mb-4">
+                        <div class="card card-custom">
+                            <div class="card-body">
+                                <h5 class="mb-3"><i class="bi bi-menu-button-wide me-2"></i> Menu</h5>
+                                <div class="list-group list-group-flush">
+                                    <button class="list-group-item list-group-item-action bg-transparent text-white border-secondary" onclick="showSection('dashboard')">
+                                        <i class="bi bi-speedometer2 me-2"></i> Dashboard
+                                    </button>
+                                    <button class="list-group-item list-group-item-action bg-transparent text-white border-secondary" onclick="showSection('create')">
+                                        <i class="bi bi-plus-circle me-2"></i> Create License
+                                    </button>
+                                    <button class="list-group-item list-group-item-action bg-transparent text-white border-secondary" onclick="showSection('manage')">
+                                        <i class="bi bi-key me-2"></i> Manage Licenses
+                                    </button>
+                                    <button class="list-group-item list-group-item-action bg-transparent text-white border-secondary" onclick="showSection('apikeys')">
+                                        <i class="bi bi-terminal me-2"></i> API Keys
+                                    </button>
+                                    <button class="list-group-item list-group-item-action bg-transparent text-white border-secondary" onclick="showSection('clientapi')">
+                                        <i class="bi bi-phone me-2"></i> Client API
+                                    </button>
+                                </div>
+                                <hr class="border-secondary">
+                                <div class="text-center">
+                                    <button class="btn btn-danger w-100" onclick="logout()">
+                                        <i class="bi bi-box-arrow-right me-2"></i> Logout
+                                    </button>
+                                </div>
                             </div>
-                            <form id="loginForm">
-                                <div class="mb-3">
-                                    <label>Username</label>
-                                    <input type="text" id="username" class="form-control" required>
+                        </div>
+                        
+                        <!-- Stats Card -->
+                        <div class="card card-custom mt-4">
+                            <div class="card-body">
+                                <h6><i class="bi bi-graph-up me-2"></i> Quick Stats</h6>
+                                <div class="row text-center mt-3">
+                                    <div class="col-6 mb-3">
+                                        <div class="text-primary fw-bold fs-4" id="statTotal">0</div>
+                                        <small class="text-muted">Total</small>
+                                    </div>
+                                    <div class="col-6 mb-3">
+                                        <div class="text-success fw-bold fs-4" id="statActive">0</div>
+                                        <small class="text-muted">Active</small>
+                                    </div>
                                 </div>
-                                <div class="mb-3">
-                                    <label>Password</label>
-                                    <input type="password" id="password" class="form-control" required>
-                                </div>
-                                <button type="submit" class="btn btn-primary w-100">Login</button>
-                            </form>
-                            <div class="mt-3 text-center">
-                                <button class="btn btn-sm btn-success" onclick="autoLogin()">Auto Login (Test)</button>
                             </div>
                         </div>
                     </div>
-                    
-                    <!-- Create License Section -->
-                    <div id="createSection" style="display:none;">
-                        <div class="card p-4">
-                            <h4>🆕 Create License</h4>
-                            <form id="createForm">
-                                <div class="mb-3">
-                                    <label>Days Valid</label>
-                                    <input type="number" id="days" class="form-control" value="30" min="1">
+
+                    <!-- Main Content -->
+                    <div class="col-lg-9">
+                        <!-- Dashboard -->
+                        <div id="dashboardSection">
+                            <div class="card card-custom">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h5 class="mb-0"><i class="bi bi-speedometer2 me-2"></i> Dashboard</h5>
+                                    <button class="btn btn-sm btn-primary-custom" onclick="loadStats()">
+                                        <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                                    </button>
                                 </div>
-                                <div class="mb-3">
-                                    <label>Note (Optional)</label>
-                                    <textarea id="note" class="form-control" rows="2"></textarea>
+                                <div class="card-body">
+                                    <div class="row mb-4">
+                                        <div class="col-md-3 col-6 mb-3">
+                                            <div class="card bg-primary text-white p-3">
+                                                <h6>Total Licenses</h6>
+                                                <h3 id="totalLicenses">0</h3>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3 col-6 mb-3">
+                                            <div class="card bg-success text-white p-3">
+                                                <h6>Active</h6>
+                                                <h3 id="activeLicenses">0</h3>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3 col-6 mb-3">
+                                            <div class="card bg-warning text-white p-3">
+                                                <h6>Locked</h6>
+                                                <h3 id="lockedLicenses">0</h3>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3 col-6 mb-3">
+                                            <div class="card bg-danger text-white p-3">
+                                                <h6>Expired</h6>
+                                                <h3 id="expiredLicenses">0</h3>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <h6 class="mb-3"><i class="bi bi-clock-history me-2"></i> Recent Licenses</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-custom">
+                                            <thead>
+                                                <tr>
+                                                    <th>License Key</th>
+                                                    <th>Status</th>
+                                                    <th>Created</th>
+                                                    <th>Expires</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="recentLicenses">
+                                                <tr>
+                                                    <td colspan="5" class="text-center py-4">
+                                                        <div class="spinner-border text-primary" role="status"></div>
+                                                        <p class="mt-2 mb-0">Loading licenses...</p>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
                                 </div>
-                                <button type="submit" class="btn btn-primary">Create License Key</button>
-                            </form>
-                            <div id="result" class="mt-3"></div>
+                            </div>
                         </div>
-                    </div>
-                    
-                    <!-- API Docs Section -->
-                    <div id="apiSection" style="display:none;">
-                        <div class="card p-4">
-                            <h4>📚 API Documentation</h4>
-                            <h5 class="mt-3">Client API (for Android):</h5>
-                            <pre class="bg-dark p-3 rounded">
-POST /api/client/validate
+
+                        <!-- Create License -->
+                        <div id="createSection" style="display: none;">
+                            <div class="card card-custom">
+                                <div class="card-header">
+                                    <h5 class="mb-0"><i class="bi bi-plus-circle me-2"></i> Create New License</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="createForm">
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <label for="daysValid" class="form-label">Validity Period (days)</label>
+                                                <input type="number" class="form-control" id="daysValid" value="30" min="1" max="3650" required>
+                                                <div class="form-text">License will expire after this many days</div>
+                                            </div>
+                                            <div class="col-md-6 mb-3">
+                                                <label for="licenseNote" class="form-label">Note (optional)</label>
+                                                <textarea class="form-control" id="licenseNote" rows="1" placeholder="Add description..."></textarea>
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary-custom w-100">
+                                            <i class="bi bi-plus-circle me-2"></i> Generate License Key
+                                        </button>
+                                    </form>
+                                    <div id="createResult" class="mt-4"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Manage Licenses -->
+                        <div id="manageSection" style="display: none;">
+                            <div class="card card-custom">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h5 class="mb-0"><i class="bi bi-key me-2"></i> Manage Licenses</h5>
+                                    <div class="input-group" style="width: 300px;">
+                                        <input type="text" id="searchInput" class="form-control" placeholder="Search licenses...">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="searchLicenses()">
+                                            <i class="bi bi-search"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-custom">
+                                            <thead>
+                                                <tr>
+                                                    <th>License Key</th>
+                                                    <th>HWID</th>
+                                                    <th>Status</th>
+                                                    <th>Created</th>
+                                                    <th>Expires</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="allLicensesTable">
+                                                <tr>
+                                                    <td colspan="6" class="text-center py-4">
+                                                        <div class="spinner-border text-primary" role="status"></div>
+                                                        <p class="mt-2 mb-0">Loading licenses...</p>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- API Keys -->
+                        <div id="apikeysSection" style="display: none;">
+                            <div class="card card-custom">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h5 class="mb-0"><i class="bi bi-terminal me-2"></i> API Keys Management</h5>
+                                    <button class="btn btn-sm btn-primary-custom" onclick="createApiKey()">
+                                        <i class="bi bi-plus me-1"></i> Create API Key
+                                    </button>
+                                </div>
+                                <div class="card-body">
+                                    <div class="alert alert-warning">
+                                        <strong><i class="bi bi-exclamation-triangle me-2"></i> Important:</strong> 
+                                        API keys are used to authenticate API requests. Keep them secret!
+                                    </div>
+                                    <div class="table-responsive">
+                                        <table class="table table-custom">
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th>
+                                                    <th>API Key</th>
+                                                    <th>Permissions</th>
+                                                    <th>Created</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="apiKeysTable">
+                                                <tr>
+                                                    <td colspan="5" class="text-center py-4">
+                                                        <div class="spinner-border text-primary" role="status"></div>
+                                                        <p class="mt-2 mb-0">Loading API keys...</p>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Client API -->
+                        <div id="clientapiSection" style="display: none;">
+                            <div class="row">
+                                <div class="col-md-6 mb-4">
+                                    <div class="card card-custom">
+                                        <div class="card-header">
+                                            <h5 class="mb-0"><i class="bi bi-file-earmark-text me-2"></i> API Documentation</h5>
+                                        </div>
+                                        <div class="card-body">
+                                            <h6>API Base URL:</h6>
+                                            <code class="license-key d-block mb-3 p-2" id="baseApiUrl">Loading...</code>
+                                            
+                                            <h6 class="mt-4">1. Validate License (Activation)</h6>
+                                            <pre><code>POST /api/client/validate
 Content-Type: application/json
 
 {
     "license_key": "LIC-XXXX-XXXX-XXXX",
-    "hwid": "device_id",
-    "device_info": "Device Info"
-}</pre>
-                            
-                            <h5 class="mt-3">Admin API:</h5>
-                            <pre class="bg-dark p-3 rounded">
-GET /api/admin/stats
-Header: X-API-Key: your_api_key
+    "hwid": "device_unique_id",
+    "device_info": "Android Device Info"
+}
 
-POST /api/admin/licenses/create
-Header: X-API-Key: your_api_key
-Body: {"days_valid": 30, "note": "test"}</pre>
+Response:
+{
+    "valid": true/false,
+    "message": "Status message",
+    "expires_at": "2024-12-31T23:59:59"
+}</code></pre>
+
+                                            <h6 class="mt-4">2. Check License Status</h6>
+                                            <pre><code>POST /api/client/check
+Content-Type: application/json
+
+{
+    "license_key": "LIC-XXXX-XXXX-XXXX",
+    "hwid": "device_unique_id"
+}</code></pre>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-4">
+                                    <div class="card card-custom">
+                                        <div class="card-header">
+                                            <h5 class="mb-0"><i class="bi bi-terminal me-2"></i> Test Client API</h5>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="mb-3">
+                                                <label for="testLicenseKey" class="form-label">License Key</label>
+                                                <input type="text" id="testLicenseKey" class="form-control" placeholder="Enter license key">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="testHWID" class="form-label">HWID (Device ID)</label>
+                                                <input type="text" id="testHWID" class="form-control" value="test-device-123">
+                                            </div>
+                                            <button class="btn btn-primary-custom w-100 mb-3" onclick="testClientAPI()">
+                                                <i class="bi bi-play-fill me-2"></i> Test License Validation
+                                            </button>
+                                            <div id="testResult"></div>
+                                            
+                                            <hr class="my-4">
+                                            <h6><i class="bi bi-android me-2"></i> Shell Script Example</h6>
+                                            <pre><code>#!/system/bin/sh
+API_URL="''' + window.location.origin + '''/api/client/validate"
+LICENSE_KEY="YOUR_LICENSE_KEY"
+HWID=$(getprop ro.serialno)
+
+response=$(curl -s -X POST "$API_URL" \\
+    -H "Content-Type: application/json" \\
+    -d "{\\"license_key\\":\\"$LICENSE_KEY\\",\\"hwid\\":\\"$HWID\\"}")
+
+valid=$(echo $response | grep -o '"valid":[^,]*' | cut -d: -f2)
+if [ "$valid" = "true" ]; then
+    echo "License valid"
+    exit 0
+else
+    echo "License invalid"
+    exit 1
+fi</code></pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-        
+
+        <!-- Toast Container -->
+        <div id="toastContainer" style="position: fixed; top: 20px; right: 20px; z-index: 9999;"></div>
+
+        <!-- Bootstrap JS -->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
         <script>
-            // Set API URL
-            document.getElementById('apiUrl').textContent = window.location.origin;
-            
-            // Show section
-            function showSection(section) {
-                ['login', 'create', 'api'].forEach(s => {
-                    document.getElementById(s + 'Section').style.display = 'none';
-                });
-                document.getElementById(section + 'Section').style.display = 'block';
-                document.getElementById('title').textContent = 
-                    section.charAt(0).toUpperCase() + section.slice(1) + ' - License Admin';
-            }
-            
-            // Auto login for testing
-            function autoLogin() {
-                document.getElementById('username').value = 'admin';
-                document.getElementById('password').value = 'admin123';
-                alert('Credentials filled. Click Login button.');
-            }
-            
-            // Login form
-            document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            // Configuration
+            const API_BASE = window.location.origin;
+            let API_KEY = '';
+            let LICENSES = [];
+
+            // Initialize
+            document.addEventListener('DOMContentLoaded', function() {
+                document.getElementById('baseApiUrl').textContent = API_BASE;
+                
+                // Check for saved API key
+                const savedApiKey = localStorage.getItem('license_admin_api_key');
+                if (savedApiKey) {
+                    API_KEY = savedApiKey;
+                    showMainPanel();
+                    loadStats();
+                }
+                
+                // Test API connection
+                testApiConnection();
+            });
+
+            // Login Form
+            document.getElementById('loginForm').addEventListener('submit', async (e) => {
                 e.preventDefault();
+                
                 const username = document.getElementById('username').value;
                 const password = document.getElementById('password').value;
                 
                 try {
-                    const response = await fetch('/api/admin/login', {
+                    const response = await fetch(API_BASE + '/api/admin/login', {
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({username, password})
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
                     });
                     
                     const data = await response.json();
+                    
                     if (data.success) {
-                        alert('✅ Login successful! API is working.');
-                        showSection('create');
+                        // Get API keys
+                        const apiKeys = await getApiKeys();
+                        if (apiKeys.length > 0) {
+                            API_KEY = apiKeys[0].key;
+                            localStorage.setItem('license_admin_api_key', API_KEY);
+                            showMainPanel();
+                            loadStats();
+                            showToast('Login successful!', 'success');
+                        } else {
+                            showToast('No API keys found', 'warning');
+                        }
                     } else {
-                        alert('❌ Login failed: ' + data.message);
+                        showToast('Login failed: ' + data.message, 'danger');
                     }
                 } catch (error) {
-                    alert('⚠️ Error: ' + error.message);
+                    showToast('Login error: ' + error.message, 'danger');
                 }
             });
-            
-            // Create license
-            document.getElementById('createForm').addEventListener('submit', async function(e) {
-                e.preventDefault();
-                const days = document.getElementById('days').value;
-                const note = document.getElementById('note').value;
+
+            // Test auto login
+            function testAutoLogin() {
+                document.getElementById('username').value = 'admin';
+                document.getElementById('password').value = 'admin123';
+                showToast('Credentials filled. Click Login button.', 'info');
+            }
+
+            // API Helper
+            async function apiRequest(endpoint, method = 'GET', body = null) {
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': API_KEY
+                };
                 
-                // Note: This requires API key - for demo only
-                alert('To create license, you need API key. Check console for API test.');
+                const options = {
+                    method,
+                    headers
+                };
                 
-                // Test API
+                if (body) {
+                    options.body = JSON.stringify(body);
+                }
+                
+                const response = await fetch(API_BASE + endpoint, options);
+                if (response.status === 401) {
+                    showToast('Invalid API key', 'danger');
+                    return null;
+                }
+                return await response.json();
+            }
+
+            // Get API Keys
+            async function getApiKeys() {
                 try {
-                    const response = await fetch('/api/admin/stats');
-                    const data = await response.json();
-                    document.getElementById('result').innerHTML = `
-                        <div class="alert alert-success">
-                            ✅ API is working!<br>
-                            Total Licenses: ${data.total_licenses || 0}<br>
-                            <small>Note: Create license requires API key header</small>
-                        </div>
-                    `;
+                    const data = await apiRequest('/api/admin/apikeys');
+                    return data?.api_keys || [];
                 } catch (error) {
-                    document.getElementById('result').innerHTML = `
+                    console.error('Error getting API keys:', error);
+                    return [];
+                }
+            }
+
+            // Show main panel
+            function showMainPanel() {
+                document.getElementById('loginSection').style.display = 'none';
+                document.getElementById('mainSections').style.display = 'block';
+                showSection('dashboard');
+            }
+
+            // Show section
+            function showSection(section) {
+                // Hide all sections
+                ['dashboard', 'create', 'manage', 'apikeys', 'clientapi'].forEach(s => {
+                    document.getElementById(s + 'Section').style.display = 'none';
+                });
+                
+                // Show selected section
+                document.getElementById(section + 'Section').style.display = 'block';
+                
+                // Load data if needed
+                if (section === 'dashboard') {
+                    loadDashboard();
+                } else if (section === 'manage') {
+                    loadAllLicenses();
+                } else if (section === 'apikeys') {
+                    loadApiKeys();
+                }
+            }
+
+            // Load stats
+            async function loadStats() {
+                try {
+                    const stats = await apiRequest('/api/admin/stats');
+                    if (!stats) return;
+                    
+                    document.getElementById('totalLicenses').textContent = stats.total_licenses || 0;
+                    document.getElementById('activeLicenses').textContent = stats.active_licenses || 0;
+                    document.getElementById('lockedLicenses').textContent = stats.locked_licenses || 0;
+                    document.getElementById('expiredLicenses').textContent = stats.expired_licenses || 0;
+                    document.getElementById('statTotal').textContent = stats.total_licenses || 0;
+                    document.getElementById('statActive').textContent = stats.active_licenses || 0;
+                    
+                    // Load recent licenses
+                    loadRecentLicenses();
+                } catch (error) {
+                    console.error('Error loading stats:', error);
+                }
+            }
+
+            // Load recent licenses
+            async function loadRecentLicenses() {
+                try {
+                    const licenses = await apiRequest('/api/admin/licenses');
+                    if (!licenses) return;
+                    
+                    LICENSES = licenses.licenses || [];
+                    const table = document.getElementById('recentLicenses');
+                    table.innerHTML = '';
+                    
+                    const recent = LICENSES.slice(0, 10);
+                    
+                    if (recent.length === 0) {
+                        table.innerHTML = '<tr><td colspan="5" class="text-center py-4">No licenses found</td></tr>';
+                        return;
+                    }
+                    
+                    recent.forEach(license => {
+                        const statusClass = license.is_locked ? 'status-locked' : 
+                                          (license.status === 'active' ? 'status-active' : 'status-expired');
+                        const statusText = license.is_locked ? 'Locked' : 
+                                         (license.status === 'active' ? 'Active' : 'Expired');
+                        
+                        const row = table.insertRow();
+                        row.innerHTML = `
+                            <td><code class="license-key">${license.license_key}</code></td>
+                            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                            <td>${formatDate(license.created_at)}</td>
+                            <td>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-info me-1" onclick="copyToClipboard('${license.license_key}')">
+                                    <i class="bi bi-copy"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-warning me-1" onclick="resetLicense('${license.license_key}')">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                            </td>
+                        `;
+                    });
+                } catch (error) {
+                    console.error('Error loading licenses:', error);
+                }
+            }
+
+            // Load all licenses
+            async function loadAllLicenses() {
+                try {
+                    const licenses = await apiRequest('/api/admin/licenses');
+                    if (!licenses) return;
+                    
+                    const table = document.getElementById('allLicensesTable');
+                    table.innerHTML = '';
+                    
+                    (licenses.licenses || []).forEach(license => {
+                        const statusClass = license.is_locked ? 'status-locked' : 
+                                          (license.status === 'active' ? 'status-active' : 'status-expired');
+                        const statusText = license.is_locked ? 'Locked' : 
+                                         (license.status === 'active' ? 'Active' : 'Expired');
+                        
+                        const row = table.insertRow();
+                        row.innerHTML = `
+                            <td><code class="license-key">${license.license_key}</code></td>
+                            <td><small>${license.hwid || 'Not activated'}</small></td>
+                            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                            <td>${formatDate(license.created_at)}</td>
+                            <td>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-info me-1" onclick="copyToClipboard('${license.license_key}')">
+                                    <i class="bi bi-copy"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-warning me-1" onclick="resetLicense('${license.license_key}')">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteLicense('${license.license_key}')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                    });
+                } catch (error) {
+                    console.error('Error loading all licenses:', error);
+                }
+            }
+
+            // Load API keys
+            async function loadApiKeys() {
+                try {
+                    const keys = await apiRequest('/api/admin/apikeys');
+                    if (!keys) return;
+                    
+                    const table = document.getElementById('apiKeysTable');
+                    table.innerHTML = '';
+                    
+                    (keys.api_keys || []).forEach(key => {
+                        const row = table.insertRow();
+                        row.innerHTML = `
+                            <td>${key.name}</td>
+                            <td><code>${key.key_masked || key.key.substring(0, 8) + '...'}</code></td>
+                            <td>${key.permissions || 'all'}</td>
+                            <td>${formatDate(key.created_at)}</td>
+                            <td>
+                                <button class="btn btn-sm btn-success" onclick="copyToClipboard('${key.key}')">
+                                    <i class="bi bi-copy me-1"></i>Copy
+                                </button>
+                            </td>
+                        `;
+                    });
+                } catch (error) {
+                    console.error('Error loading API keys:', error);
+                }
+            }
+
+            // Create license
+            document.getElementById('createForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const daysValid = document.getElementById('daysValid').value;
+                const note = document.getElementById('licenseNote').value;
+                
+                try {
+                    const result = await apiRequest('/api/admin/licenses/create', 'POST', {
+                        days_valid: daysValid,
+                        note: note
+                    });
+                    
+                    if (result?.success) {
+                        const resultDiv = document.getElementById('createResult');
+                        resultDiv.innerHTML = `
+                            <div class="alert alert-success">
+                                <h6><i class="bi bi-check-circle me-2"></i> License Created Successfully!</h6>
+                                <p><strong>License Key:</strong> <code class="license-key">${result.license_key}</code></p>
+                                <p><strong>Expires:</strong> ${formatDate(result.expires_at)}</p>
+                                <button class="btn btn-sm btn-success" onclick="copyToClipboard('${result.license_key}')">
+                                    <i class="bi bi-copy me-1"></i>Copy License Key
+                                </button>
+                            </div>
+                        `;
+                        loadStats();
+                    } else {
+                        showToast('Failed to create license', 'danger');
+                    }
+                } catch (error) {
+                    showToast('Error: ' + error.message, 'danger');
+                }
+            });
+
+            // Create API key
+            async function createApiKey() {
+                const name = prompt('Enter API Key name:', 'New API Key');
+                if (!name) return;
+                
+                try {
+                    const result = await apiRequest('/api/admin/apikeys/create', 'POST', { name: name });
+                    if (result?.success) {
+                        alert(`API Key created!\n\n${result.api_key}\n\nSave this key now - it won't be shown again!`);
+                        copyToClipboard(result.api_key);
+                        loadApiKeys();
+                    } else {
+                        showToast('Failed to create API key', 'danger');
+                    }
+                } catch (error) {
+                    showToast('Error: ' + error.message, 'danger');
+                }
+            }
+
+            // Reset license
+            async function resetLicense(licenseKey) {
+                if (!confirm(`Reset license ${licenseKey}? This will clear HWID binding.`)) return;
+                
+                try {
+                    const result = await apiRequest('/api/admin/licenses/reset', 'POST', {
+                        license_key: licenseKey
+                    });
+                    
+                    if (result?.success) {
+                        showToast('License reset successfully', 'success');
+                        loadStats();
+                        loadAllLicenses();
+                    } else {
+                        showToast('Failed to reset license', 'danger');
+                    }
+                } catch (error) {
+                    showToast('Error: ' + error.message, 'danger');
+                }
+            }
+
+            // Delete license
+            async function deleteLicense(licenseKey) {
+                if (!confirm(`DELETE license ${licenseKey} permanently?`)) return;
+                
+                try {
+                    const result = await apiRequest('/api/admin/licenses/delete', 'POST', {
+                        license_key: licenseKey
+                    });
+                    
+                    if (result?.success) {
+                        showToast('License deleted', 'success');
+                        loadStats();
+                        loadAllLicenses();
+                    } else {
+                        showToast('Failed to delete license', 'danger');
+                    }
+                } catch (error) {
+                    showToast('Error: ' + error.message, 'danger');
+                }
+            }
+
+            // Test client API
+            async function testClientAPI() {
+                const licenseKey = document.getElementById('testLicenseKey').value;
+                const hwid = document.getElementById('testHWID').value;
+                
+                if (!licenseKey) {
+                    showToast('Please enter a license key', 'warning');
+                    return;
+                }
+                
+                const resultDiv = document.getElementById('testResult');
+                resultDiv.innerHTML = `
+                    <div class="alert alert-info">
+                        <div class="spinner-border spinner-border-sm me-2"></div>
+                        Testing license validation...
+                    </div>
+                `;
+                
+                try {
+                    const response = await fetch(API_BASE + '/api/client/validate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            license_key: licenseKey,
+                            hwid: hwid,
+                            device_info: 'Test Device'
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.valid) {
+                        resultDiv.innerHTML = `
+                            <div class="alert alert-success">
+                                <i class="bi bi-check-circle me-2"></i>
+                                <strong>Success!</strong> ${data.message}<br>
+                                ${data.expires_at ? `<small>Expires: ${formatDate(data.expires_at)}</small>` : ''}
+                            </div>
+                        `;
+                    } else {
+                        resultDiv.innerHTML = `
+                            <div class="alert alert-danger">
+                                <i class="bi bi-x-circle me-2"></i>
+                                <strong>Failed!</strong> ${data.message}
+                            </div>
+                        `;
+                    }
+                } catch (error) {
+                    resultDiv.innerHTML = `
                         <div class="alert alert-danger">
-                            ❌ API Error: ${error.message}
+                            <i class="bi bi-x-circle me-2"></i>
+                            <strong>Error:</strong> ${error.message}
                         </div>
                     `;
                 }
-            });
-            
-            // Show login by default
-            showSection('login');
+            }
+
+            // Helper functions
+            function formatDate(dateString) {
+                if (!dateString) return 'N/A';
+                try {
+                    const date = new Date(dateString);
+                    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                } catch (e) {
+                    return dateString;
+                }
+            }
+
+            function copyToClipboard(text) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast('Copied to clipboard!', 'success');
+                });
+            }
+
+            function showToast(message, type = 'info') {
+                const toast = document.createElement('div');
+                toast.className = `toast align-items-center text-white bg-${type} border-0`;
+                toast.setAttribute('role', 'alert');
+                toast.innerHTML = `
+                    <div class="d-flex">
+                        <div class="toast-body">${message}</div>
+                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                    </div>
+                `;
+                
+                document.getElementById('toastContainer').appendChild(toast);
+                const bsToast = new bootstrap.Toast(toast, { delay: 3000 });
+                bsToast.show();
+                
+                toast.addEventListener('hidden.bs.toast', () => {
+                    toast.remove();
+                });
+            }
+
+            function testApiConnection() {
+                fetch(API_BASE + '/api/admin/stats')
+                    .then(response => {
+                        if (response.ok) {
+                            document.getElementById('apiStatus').className = 'badge bg-success me-3';
+                            document.getElementById('apiStatus').textContent = 'API: Online';
+                        } else {
+                            document.getElementById('apiStatus').className = 'badge bg-danger me-3';
+                            document.getElementById('apiStatus').textContent = 'API: Error';
+                        }
+                    })
+                    .catch(() => {
+                        document.getElementById('apiStatus').className = 'badge bg-danger me-3';
+                        document.getElementById('apiStatus').textContent = 'API: Offline';
+                    });
+            }
+
+            function toggleDarkMode() {
+                document.body.classList.toggle('dark-mode');
+            }
+
+            function logout() {
+                if (confirm('Are you sure you want to logout?')) {
+                    localStorage.removeItem('license_admin_api_key');
+                    API_KEY = '';
+                    document.getElementById('mainSections').style.display = 'none';
+                    document.getElementById('loginSection').style.display = 'block';
+                    document.getElementById('username').value = '';
+                    document.getElementById('password').value = '';
+                    showToast('Logged out successfully', 'info');
+                }
+            }
+
+            // Load dashboard on startup if logged in
+            if (API_KEY) {
+                showMainPanel();
+            }
         </script>
     </body>
     </html>
     '''
+
+@app.route('/admin')
+def admin():
+    return index()
+
+# ============== ADMIN API ==============
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM admin_users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+    
+    if user:
+        try:
+            if argon2_hasher.verify(user['password_hash'], password):
+                return jsonify({
+                    'success': True,
+                    'message': 'Login successful',
+                    'username': username
+                })
+        except:
+            pass
+    
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
+
+@app.route('/api/admin/licenses', methods=['GET'])
+def get_all_licenses():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM licenses ORDER BY created_at DESC')
+    
+    licenses = []
+    for row in cursor.fetchall():
+        license_data = dict(row)
+        licenses.append(license_data)
+    
+    return jsonify({'licenses': licenses})
+
+@app.route('/api/admin/licenses/create', methods=['POST'])
+def create_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    days_valid = data.get('days_valid', 30)
+    note = data.get('note', '')
+    
+    license_key = generate_license_key()
+    expires_at = datetime.now() + timedelta(days=days_valid)
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    try:
+        cursor.execute('''
+            INSERT INTO licenses (license_key, expires_at, note, status)
+            VALUES (?, ?, ?, 'active')
+        ''', (license_key, expires_at, note))
+        
+        db.commit()
+        return jsonify({
+            'success': True,
+            'license_key': license_key,
+            'expires_at': expires_at.isoformat(),
+            'message': 'License created successfully'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/api/admin/licenses/reset', methods=['POST'])
+def reset_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET hwid = NULL, 
+            device_info = NULL,
+            last_check = NULL,
+            is_locked = 0,
+            lock_reason = NULL,
+            status = 'active'
+        WHERE license_key = ?
+    ''', (license_key,))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License reset successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+@app.route('/api/admin/licenses/lock', methods=['POST'])
+def lock_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    reason = data.get('reason', 'Admin lock')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET is_locked = 1,
+            lock_reason = ?,
+            status = 'locked'
+        WHERE license_key = ?
+    ''', (reason, license_key))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License locked successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+@app.route('/api/admin/licenses/delete', methods=['POST'])
+def delete_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('DELETE FROM licenses WHERE license_key = ?', (license_key,))
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License deleted successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+@app.route('/api/admin/licenses/revoke', methods=['POST'])
+def revoke_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET status = 'revoked',
+            is_locked = 1,
+            lock_reason = 'Revoked by admin'
+        WHERE license_key = ?
+    ''', (license_key,))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License revoked successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+# ============== CLIENT API ==============
+@app.route('/api/client/validate', methods=['POST'])
+def validate_license():
+    data = request.json
+    license_key = data.get('license_key')
+    hwid = data.get('hwid')
+    device_info = data.get('device_info', '')
+    
+    if not license_key or not hwid:
+        return jsonify({
+            'valid': False,
+            'message': 'License key and HWID are required'
+        }), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM licenses 
+        WHERE license_key = ? 
+        AND status = 'active'
+    ''', (license_key,))
+    
+    license_data = cursor.fetchone()
+    
+    if not license_data:
+        return jsonify({
+            'valid': False,
+            'message': 'Invalid license key'
+        })
+    
+    # Kiểm tra nếu bị locked
+    if license_data['is_locked']:
+        return jsonify({
+            'valid': False,
+            'message': f'License is locked: {license_data.get("lock_reason", "Unknown reason")}'
+        })
+    
+    # Kiểm tra hạn sử dụng
+    expires_at = license_data['expires_at']
+    if expires_at:
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        
+        if expires_at < datetime.now():
+            return jsonify({
+                'valid': False,
+                'message': 'License has expired'
+            })
+    
+    # Nếu license chưa có HWID (lần đầu kích hoạt)
+    if not license_data['hwid']:
+        cursor.execute('''
+            UPDATE licenses 
+            SET hwid = ?,
+                device_info = ?,
+                last_check = ?
+            WHERE license_key = ?
+        ''', (hwid, device_info, datetime.now(), license_key))
+        db.commit()
+        
+        return jsonify({
+            'valid': True,
+            'message': 'License activated successfully',
+            'expires_at': license_data['expires_at']
+        })
+    
+    # Kiểm tra HWID có khớp không
+    if license_data['hwid'] != hwid:
+        return jsonify({
+            'valid': False,
+            'message': 'HWID mismatch. This license is bound to another device.'
+        })
+    
+    # Cập nhật thời gian check cuối
+    cursor.execute('''
+        UPDATE licenses 
+        SET last_check = ?
+        WHERE license_key = ?
+    ''', (datetime.now(), license_key))
+    db.commit()
+    
+    return jsonify({
+        'valid': True,
+        'message': 'License is valid',
+        'expires_at': license_data['expires_at']
+    })
+
+@app.route('/api/client/check', methods=['POST'])
+def check_license():
+    data = request.json
+    license_key = data.get('license_key')
+    hwid = data.get('hwid')
+    
+    if not license_key or not hwid:
+        return jsonify({'valid': False, 'message': 'License key and HWID are required'}), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('SELECT * FROM licenses WHERE license_key = ? AND hwid = ?', (license_key, hwid))
+    license_data = cursor.fetchone()
+    
+    if not license_data:
+        return jsonify({'valid': False, 'message': 'Invalid license or HWID'})
+    
+    return jsonify({
+        'valid': license_data['status'] == 'active' and not license_data['is_locked'],
+        'status': license_data['status'],
+        'is_locked': bool(license_data['is_locked']),
+        'lock_reason': license_data['lock_reason'],
+        'expires_at': license_data['expires_at']
+    })
+
+# ============== API KEY MANAGEMENT ==============
+@app.route('/api/admin/apikeys', methods=['GET'])
+def get_api_keys():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM api_keys ORDER BY created_at DESC")
+    
+    keys = []
+    for row in cursor.fetchall():
+        key_data = dict(row)
+        key_data['key_masked'] = key_data['key'][:8] + '...' + key_data['key'][-4:]
+        keys.append(key_data)
+    
+    return jsonify({'api_keys': keys})
+
+@app.route('/api/admin/apikeys/create', methods=['POST'])
+def create_api_key():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    name = data.get('name', 'New API Key')
+    
+    api_key = f"sk_{uuid.uuid4().hex[:32]}"
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute(
+        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+        (api_key, name, 'all')
+    )
+    db.commit()
+    
+    return jsonify({
+        'success': True,
+        'api_key': api_key,
+        'name': name,
+        'message': 'API key created successfully'
+    })
+
+# ============== STATISTICS ==============
+@app.route('/api/admin/stats', methods=['GET'])
+def get_stats():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute("SELECT COUNT(*) as total FROM licenses")
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as active FROM licenses WHERE status = 'active'")
+    active = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as locked FROM licenses WHERE is_locked = 1")
+    locked = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as expired FROM licenses WHERE expires_at < datetime('now')")
+    expired = cursor.fetchone()[0]
+    
+    return jsonify({
+        'total_licenses': total,
+        'active_licenses': active,
+        'locked_licenses': locked,
+        'expired_licenses': expired
+    })
+
+# ============== INITIALIZE & RUN ==============
+# Khởi tạo database khi ứng dụng start
+with app.app_context():
+    init_db()
+
+if __name__ == '__main__':
+    # Lấy port từ environment variable (Render cung cấp)
+    port = int(os.environ.get('PORT', 8080))
+    
+    # Khởi động ứng dụng
+    app.run(host='0.0.0.0', port=port, debug=False)
