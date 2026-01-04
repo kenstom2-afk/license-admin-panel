@@ -87,8 +87,9 @@ def init_db():
                 "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
                 ("admin", password_hash)
             )
+            print("✅ Default admin user created: admin / admin123")
         
-        # Thêm API key mặc định
+        # ĐẢM BẢO LUÔN CÓ ÍT NHẤT 1 API KEY
         cursor.execute("SELECT COUNT(*) as count FROM api_keys")
         if cursor.fetchone()[0] == 0:
             default_api_key = f"sk_{uuid.uuid4().hex[:32]}"
@@ -96,8 +97,10 @@ def init_db():
                 "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
                 (default_api_key, "Default API Key", "all")
             )
+            print(f"✅ Default API Key created: {default_api_key}")
         
         db.commit()
+        print("✅ Database initialized successfully!")
 
 # ============== HELPER FUNCTIONS ==============
 def validate_api_key():
@@ -124,11 +127,21 @@ def index():
         return '''
         <!DOCTYPE html>
         <html>
-        <head><title>License Admin</title></head>
+        <head>
+            <title>License Admin</title>
+            <style>
+                body { font-family: Arial; padding: 20px; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+            </style>
+        </head>
         <body>
-            <h1>License Admin Panel</h1>
-            <p>Please ensure admin.html exists in the root directory.</p>
-            <p><a href="/api/admin/stats">Check API Status</a></p>
+            <div class="container">
+                <h1>📋 License Admin Panel</h1>
+                <p>System is running! API endpoints are active.</p>
+                <p><a href="/api/admin/debug" target="_blank">Check System Status</a></p>
+                <p><button class="btn" onclick="window.location.reload()">Reload Page</button></p>
+            </div>
         </body>
         </html>
         '''
@@ -137,9 +150,88 @@ def index():
 def admin():
     return index()
 
+# ============== DEBUG & SETUP ENDPOINTS ==============
+@app.route('/api/admin/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to check system status"""
+    db = get_db()
+    cursor = db.cursor()
+    
+    # Check tables
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row['name'] for row in cursor.fetchall()]
+    
+    # Count records
+    admin_count = cursor.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
+    api_key_count = cursor.execute("SELECT COUNT(*) FROM api_keys").fetchone()[0]
+    license_count = cursor.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+    
+    # Get first API key (masked)
+    cursor.execute("SELECT key, name FROM api_keys LIMIT 1")
+    api_key_row = cursor.fetchone()
+    api_key_info = None
+    if api_key_row:
+        api_key_info = {
+            'name': api_key_row['name'],
+            'key_masked': api_key_row['key'][:8] + '...' + api_key_row['key'][-4:]
+        }
+    
+    return jsonify({
+        'status': 'online',
+        'database_tables': tables,
+        'counts': {
+            'admin_users': admin_count,
+            'api_keys': api_key_count,
+            'licenses': license_count
+        },
+        'api_key_info': api_key_info,
+        'message': 'System is running correctly' if api_key_count > 0 else 'No API keys found!'
+    })
+
+@app.route('/api/admin/setup', methods=['POST'])
+def setup_system():
+    """Setup system with default API key"""
+    data = request.json
+    action = data.get('action', 'create_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    if action == 'create_key':
+        # Create new API key
+        new_api_key = f"sk_{uuid.uuid4().hex[:32]}"
+        cursor.execute(
+            "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+            (new_api_key, "Auto-generated Key", "all")
+        )
+        db.commit()
+        
+        return jsonify({
+            'success': True,
+            'api_key': new_api_key,
+            'message': 'New API key created successfully. Save this key!'
+        })
+    
+    elif action == 'reset_admin':
+        # Reset admin password
+        password_hash = argon2_hasher.hash("admin123")
+        cursor.execute(
+            "INSERT OR REPLACE INTO admin_users (username, password_hash) VALUES (?, ?)",
+            ("admin", password_hash)
+        )
+        db.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Admin password reset to: admin123'
+        })
+    
+    return jsonify({'success': False, 'message': 'Invalid action'})
+
 # ============== ADMIN API ==============
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
+    """Login endpoint - returns API key directly"""
     data = request.json
     username = data.get('username')
     password = data.get('password')
@@ -152,10 +244,27 @@ def admin_login():
     if user:
         try:
             if argon2_hasher.verify(user['password_hash'], password):
+                # Get or create API key
+                cursor.execute("SELECT key FROM api_keys LIMIT 1")
+                api_key_row = cursor.fetchone()
+                
+                if api_key_row:
+                    api_key = api_key_row['key']
+                else:
+                    # Create new API key if none exists
+                    api_key = f"sk_{uuid.uuid4().hex[:32]}"
+                    cursor.execute(
+                        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+                        (api_key, "Auto-generated for login", "all")
+                    )
+                    db.commit()
+                
                 return jsonify({
                     'success': True,
                     'message': 'Login successful',
-                    'username': username
+                    'username': username,
+                    'api_key': api_key,  # Trả về API key luôn
+                    'api_key_masked': api_key[:8] + '...' + api_key[-4:]
                 })
         except:
             pass
