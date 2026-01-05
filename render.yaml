@@ -1,12 +1,4 @@
 services:
-  # PostgreSQL Database (Tạo TRƯỚC)
-  - type: postgres
-    name: admin-panel-db
-    plan: free
-    databaseName: admin_panel
-    ipAllowList: []
-  
-  # Flask Backend
   - type: web
     name: admin-panel
     env: python
@@ -24,11 +16,7 @@ services:
         generateValue: true
       - key: ADMIN_USERNAME
         value: admin
-      - key: ADMIN_PASSWORD
-        value: admin123  # ĐỔI TRONG PRODUCTION!
+      - key: ADMIN_PASSWORD_HASH
+        value: 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9  # hash of 'admin123'
       - key: JWT_SECRET
         generateValue: true
-      - key: DATABASE_URL
-        fromDatabase:
-          name: admin-panel-db
-          property: connectionString
