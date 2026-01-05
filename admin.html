@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel - Quản lý Server Key & API</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="/style.css">
     <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔑</text></svg>">
 </head>
 <body>
@@ -41,6 +41,7 @@
                 
                 <div class="login-info">
                     <p><i class="fas fa-info-circle"></i> Thông tin mặc định: admin / admin123</p>
+                    <p><i class="fas fa-exclamation-triangle"></i> Vui lòng đổi password trong production!</p>
                 </div>
             </div>
         </div>
@@ -120,7 +121,7 @@
             </button>
             
             <div class="search-container">
-                <input type="text" id="searchInput" placeholder="Tìm kiếm key...">
+                <input type="text" id="searchInput" placeholder="Tìm kiếm key..." autocomplete="off">
                 <i class="fas fa-search"></i>
             </div>
             
@@ -133,7 +134,7 @@
 
         <!-- Keys Table -->
         <div class="table-wrapper">
-            <table id="keysTable">
+            <table id="keysTable" class="hidden">
                 <thead>
                     <tr>
                         <th>ID</th>
@@ -156,7 +157,10 @@
             
             <div id="noData" class="no-data hidden">
                 <i class="fas fa-database"></i>
-                <p>Không có dữ liệu</p>
+                <p>Không có dữ liệu key nào</p>
+                <button id="createFirstKey" class="btn-success">
+                    <i class="fas fa-plus"></i> Tạo Key Đầu Tiên
+                </button>
             </div>
         </div>
 
@@ -164,7 +168,9 @@
         <div class="activity-section">
             <h2><i class="fas fa-history"></i> Hoạt động gần đây</h2>
             <div class="activity-list" id="activityList">
-                <!-- Activity logs sẽ được thêm ở đây -->
+                <div class="loading-small">
+                    <i class="fas fa-spinner fa-spin"></i> Đang tải...
+                </div>
             </div>
         </div>
     </div>
@@ -182,14 +188,14 @@
                     <label for="newKeyName">
                         <i class="fas fa-tag"></i> Tên Key *
                     </label>
-                    <input type="text" id="newKeyName" placeholder="VD: Production Server">
+                    <input type="text" id="newKeyName" placeholder="VD: Production Server" autocomplete="off">
                 </div>
                 
                 <div class="form-group">
                     <label for="newKeyNotes">
                         <i class="fas fa-sticky-note"></i> Ghi chú
                     </label>
-                    <textarea id="newKeyNotes" rows="3" placeholder="Mô tả về key này..."></textarea>
+                    <textarea id="newKeyNotes" rows="3" placeholder="Mô tả về key này..." autocomplete="off"></textarea>
                 </div>
                 
                 <div class="modal-actions">
@@ -212,6 +218,11 @@
             
             <div class="modal-body">
                 <div class="key-info">
+                    <div class="info-row">
+                        <span class="label">ID Key:</span>
+                        <span id="detailKeyId" class="value"></span>
+                    </div>
+                    
                     <div class="info-row">
                         <span class="label">Tên Key:</span>
                         <span id="detailKeyName" class="value"></span>
@@ -279,6 +290,6 @@
         <span id="toastMessage"></span>
     </div>
 
-    <script src="script.js"></script>
+    <script src="/script.js"></script>
 </body>
 </html>
