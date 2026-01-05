@@ -1,7 +1,8 @@
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for, send_from_directory
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 import sqlite3
@@ -10,22 +11,20 @@ import json
 import logging
 import re
 
-# Cấu hình logging
+# ============ CONFIGURATION ============
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, 
-            static_folder='static',
-            static_url_path='/static',
-            template_folder='templates')
+            static_folder='../static',
+            template_folder='../templates')
 
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
-app.config['DATABASE_PATH'] = os.path.join(os.path.dirname(__file__), 'database.db')
+app.config['DATABASE_PATH'] = os.path.join(os.path.dirname(__file__), 'license.db')
 CORS(app)
 
-# ============ DATABASE FUNCTIONS ============
-
+# ============ DATABASE SETUP ============
 def get_db_connection():
     conn = sqlite3.connect(app.config['DATABASE_PATH'])
     conn.row_factory = sqlite3.Row
@@ -34,12 +33,12 @@ def get_db_connection():
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def init_db():
+def init_database():
     logger.info("Initializing database...")
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Bảng admin users
+    # Admin users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS admin_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +48,32 @@ def init_db():
         )
     ''')
     
-    # Bảng licenses với đầy đủ tính năng
+    # Server keys table (for shell script authentication)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS server_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_name TEXT NOT NULL,
+            server_key TEXT UNIQUE NOT NULL,
+            status TEXT DEFAULT 'active',
+            permissions TEXT DEFAULT 'all',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP
+        )
+    ''')
+    
+    # API keys table (for client verification)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_name TEXT NOT NULL,
+            api_key TEXT UNIQUE NOT NULL,
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP
+        )
+    ''')
+    
+    # Licenses table with all features
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS licenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,23 +93,12 @@ def init_db():
             auto_renew BOOLEAN DEFAULT FALSE,
             reset_count INTEGER DEFAULT 0,
             last_reset TIMESTAMP,
-            is_custom_key BOOLEAN DEFAULT FALSE
+            is_custom_key BOOLEAN DEFAULT FALSE,
+            metadata TEXT
         )
     ''')
     
-    # Bảng API keys
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            api_key TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_used TIMESTAMP
-        )
-    ''')
-    
-    # Bảng license activations
+    # License activations table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS license_activations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +106,7 @@ def init_db():
             hwid TEXT NOT NULL,
             ip_address TEXT,
             device_name TEXT,
+            country TEXT,
             activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_check TIMESTAMP,
             is_active BOOLEAN DEFAULT TRUE,
@@ -100,9 +114,9 @@ def init_db():
         )
     ''')
     
-    # Bảng logs
+    # Activity logs
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admin_logs (
+        CREATE TABLE IF NOT EXISTS activity_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             admin_id INTEGER,
             action TEXT NOT NULL,
@@ -114,7 +128,7 @@ def init_db():
     
     conn.commit()
     
-    # Tạo admin mặc định
+    # Create default admin if not exists
     cursor.execute('SELECT * FROM admin_users WHERE username = ?', ('admin',))
     admin = cursor.fetchone()
     
@@ -126,15 +140,27 @@ def init_db():
         )
         logger.info("✅ Default admin user created: admin / Anhhuy123")
     
-    # Tạo API key mặc định
+    # Create default server key for shell scripts
+    cursor.execute('SELECT * FROM server_keys')
+    server_key = cursor.fetchone()
+    
+    if not server_key:
+        server_key_value = f"server_{secrets.token_hex(24)}"
+        cursor.execute(
+            'INSERT INTO server_keys (key_name, server_key, permissions) VALUES (?, ?, ?)',
+            ('Default Server Key', server_key_value, 'all')
+        )
+        logger.info(f"✅ Default Server Key created: {server_key_value}")
+    
+    # Create default API key
     cursor.execute('SELECT * FROM api_keys')
     api_key = cursor.fetchone()
     
     if not api_key:
-        api_key_value = f"sk_{secrets.token_hex(16)}"
+        api_key_value = f"api_{secrets.token_hex(24)}"
         cursor.execute(
-            'INSERT INTO api_keys (api_key, name) VALUES (?, ?)',
-            (api_key_value, 'Default API Key')
+            'INSERT INTO api_keys (key_name, api_key) VALUES (?, ?)',
+            ('Default API Key', api_key_value)
         )
         logger.info(f"✅ Default API Key created: {api_key_value}")
     
@@ -142,15 +168,11 @@ def init_db():
     conn.close()
     logger.info("✅ Database initialized successfully!")
 
-# Khởi tạo database
+# Initialize database
 with app.app_context():
-    try:
-        init_db()
-    except Exception as e:
-        logger.error(f"Database init error: {e}")
+    init_database()
 
 # ============ HELPER FUNCTIONS ============
-
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -159,12 +181,64 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-def log_action(action, details=None):
+def server_key_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        server_key = request.headers.get('X-Server-Key')
+        if not server_key:
+            return jsonify({'success': False, 'message': 'Server key required'}), 401
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM server_keys WHERE server_key = ? AND status = "active"', (server_key,))
+        valid_key = cursor.fetchone()
+        conn.close()
+        
+        if not valid_key:
+            return jsonify({'success': False, 'message': 'Invalid server key'}), 401
+        
+        # Update last used
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE server_keys SET last_used = CURRENT_TIMESTAMP WHERE server_key = ?', (server_key,))
+        conn.commit()
+        conn.close()
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+def api_key_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            return jsonify({'success': False, 'message': 'API key required'}), 401
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM api_keys WHERE api_key = ? AND status = "active"', (api_key,))
+        valid_key = cursor.fetchone()
+        conn.close()
+        
+        if not valid_key:
+            return jsonify({'success': False, 'message': 'Invalid API key'}), 401
+        
+        # Update last used
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE api_keys SET last_used = CURRENT_TIMESTAMP WHERE api_key = ?', (api_key,))
+        conn.commit()
+        conn.close()
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+def log_activity(action, details=None):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO admin_logs (admin_id, action, details, ip_address)
+            INSERT INTO activity_logs (admin_id, action, details, ip_address)
             VALUES (?, ?, ?, ?)
         ''', (
             session.get('admin_id'),
@@ -175,20 +249,17 @@ def log_action(action, details=None):
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.error(f"Log action error: {str(e)}")
+        logger.error(f"Activity log error: {str(e)}")
 
 def generate_license_key(custom_key=None):
     if custom_key:
-        # Validate custom key format
-        if not re.match(r'^[A-Z0-9-]{8,50}$', custom_key):
+        if not re.match(r'^[A-Z0-9-]{10,50}$', custom_key):
             return None
         return custom_key.upper()
     else:
-        # Generate random key
-        return f"LIC-{secrets.token_hex(8).upper()}"
+        return f"LIC-{secrets.token_hex(8).upper()}-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}-{secrets.token_hex(8).upper()}"
 
-# ============ ROUTES ============
-
+# ============ ADMIN ROUTES ============
 @app.route('/')
 def index():
     return redirect('/login')
@@ -203,14 +274,7 @@ def admin_dashboard():
         return redirect('/login')
     return render_template('admin.html')
 
-# ============ STATIC FILES ============
-
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    return send_from_directory(app.static_folder, filename)
-
-# ============ ADMIN API ============
-
+# ============ ADMIN API ENDPOINTS ============
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
     try:
@@ -219,7 +283,7 @@ def admin_login():
         password = data.get('password', '')
         
         if not username or not password:
-            return jsonify({'success': False, 'message': 'Vui lòng nhập đầy đủ thông tin'}), 400
+            return jsonify({'success': False, 'message': 'Please enter username and password'}), 400
         
         hashed_password = hash_password(password)
         
@@ -237,80 +301,25 @@ def admin_login():
             session['username'] = username
             session['admin_id'] = admin['id']
             
-            log_action('LOGIN', {'username': username})
+            log_activity('LOGIN', {'username': username})
             
             return jsonify({
                 'success': True, 
-                'message': 'Đăng nhập thành công',
+                'message': 'Login successful',
                 'redirect': '/admin'
             })
         else:
-            return jsonify({'success': False, 'message': 'Tên đăng nhập hoặc mật khẩu không đúng'}), 401
+            return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi server'}), 500
+        return jsonify({'success': False, 'message': 'Server error'}), 500
 
 @app.route('/api/admin/logout', methods=['POST'])
 @login_required
 def admin_logout():
-    log_action('LOGOUT')
+    log_activity('LOGOUT')
     session.clear()
-    return jsonify({'success': True, 'message': 'Đã đăng xuất'})
-
-@app.route('/api/admin/change-password', methods=['POST'])
-@login_required
-def change_password():
-    try:
-        data = request.get_json()
-        current_password = data.get('current_password')
-        new_password = data.get('new_password')
-        confirm_password = data.get('confirm_password')
-        
-        if not current_password or not new_password or not confirm_password:
-            return jsonify({'success': False, 'message': 'Vui lòng nhập đầy đủ thông tin'}), 400
-        
-        if new_password != confirm_password:
-            return jsonify({'success': False, 'message': 'Mật khẩu mới không khớp'}), 400
-        
-        if len(new_password) < 6:
-            return jsonify({'success': False, 'message': 'Mật khẩu phải có ít nhất 6 ký tự'}), 400
-        
-        username = session.get('username')
-        current_hashed = hash_password(current_password)
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Verify current password
-        cursor.execute(
-            'SELECT * FROM admin_users WHERE username = ? AND password = ?',
-            (username, current_hashed)
-        )
-        admin = cursor.fetchone()
-        
-        if not admin:
-            conn.close()
-            return jsonify({'success': False, 'message': 'Mật khẩu hiện tại không đúng'}), 401
-        
-        # Update password
-        new_hashed = hash_password(new_password)
-        cursor.execute(
-            'UPDATE admin_users SET password = ? WHERE username = ?',
-            (new_hashed, username)
-        )
-        
-        conn.commit()
-        conn.close()
-        
-        log_action('CHANGE_PASSWORD')
-        
-        return jsonify({
-            'success': True, 
-            'message': 'Đã thay đổi mật khẩu thành công'
-        })
-    except Exception as e:
-        logger.error(f"Change password error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi server'}), 500
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
 
 @app.route('/api/admin/stats')
 @login_required
@@ -319,6 +328,7 @@ def get_stats():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # License stats
         cursor.execute('SELECT COUNT(*) FROM licenses')
         total_licenses = cursor.fetchone()[0]
         
@@ -334,24 +344,20 @@ def get_stats():
         cursor.execute('SELECT COUNT(*) FROM licenses WHERE status = "banned"')
         banned_licenses = cursor.fetchone()[0]
         
+        # API keys stats
         cursor.execute('SELECT COUNT(*) FROM api_keys WHERE status = "active"')
         active_api_keys = cursor.fetchone()[0]
+        
+        # Server keys stats
+        cursor.execute('SELECT COUNT(*) FROM server_keys WHERE status = "active"')
+        active_server_keys = cursor.fetchone()[0]
         
         # Today's stats
         today = datetime.now().strftime('%Y-%m-%d')
         cursor.execute('SELECT COUNT(*) FROM licenses WHERE DATE(created_at) = ?', (today,))
         today_licenses = cursor.fetchone()[0]
         
-        # Expiring soon (within 7 days)
-        cursor.execute('''
-            SELECT COUNT(*) FROM licenses 
-            WHERE status = "active" 
-            AND expires_at IS NOT NULL 
-            AND expires_at <= datetime('now', '+7 days')
-        ''')
-        expiring_soon = cursor.fetchone()[0]
-        
-        # Custom keys count
+        # Custom keys
         cursor.execute('SELECT COUNT(*) FROM licenses WHERE is_custom_key = 1')
         custom_keys = cursor.fetchone()[0]
         
@@ -366,51 +372,61 @@ def get_stats():
                 'expired_licenses': expired_licenses,
                 'banned_licenses': banned_licenses,
                 'active_api_keys': active_api_keys,
+                'active_server_keys': active_server_keys,
                 'today_licenses': today_licenses,
-                'expiring_soon': expiring_soon,
                 'custom_keys': custom_keys
             }
         })
     except Exception as e:
         logger.error(f"Stats error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi lấy thống kê'}), 500
+        return jsonify({'success': False, 'message': 'Error getting statistics'}), 500
 
-@app.route('/api/admin/licenses')
+# ============ LICENSE MANAGEMENT API ============
+@app.route('/api/admin/licenses', methods=['GET'])
 @login_required
 def get_licenses():
     try:
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 20))
         search = request.args.get('search', '')
         status = request.args.get('status', '')
-        product = request.args.get('product', '')
+        
+        offset = (page - 1) * limit
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
         query = 'SELECT * FROM licenses WHERE 1=1'
+        count_query = 'SELECT COUNT(*) FROM licenses WHERE 1=1'
         params = []
         
         if search:
-            query += ' AND (license_key LIKE ? OR owner LIKE ? OR notes LIKE ?)'
+            query += ' AND (license_key LIKE ? OR owner LIKE ? OR product LIKE ?)'
+            count_query += ' AND (license_key LIKE ? OR owner LIKE ? OR product LIKE ?)'
             search_term = f'%{search}%'
             params.extend([search_term, search_term, search_term])
         
         if status:
             query += ' AND status = ?'
+            count_query += ' AND status = ?'
             params.append(status)
         
-        if product:
-            query += ' AND product = ?'
-            params.append(product)
+        query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?'
         
-        query += ' ORDER BY created_at DESC'
+        # Get total count
+        count_params = params.copy()
+        cursor.execute(count_query, count_params)
+        total = cursor.fetchone()[0]
         
+        # Get licenses
+        params.extend([limit, offset])
         cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()
         
         licenses = []
         for row in rows:
-            # Tính số ngày còn lại
+            # Calculate days left (24h/day)
             days_left = None
             if row['expires_at']:
                 try:
@@ -441,10 +457,19 @@ def get_licenses():
                 'days_left': days_left
             })
         
-        return jsonify({'success': True, 'data': licenses})
+        return jsonify({
+            'success': True,
+            'data': licenses,
+            'pagination': {
+                'page': page,
+                'limit': limit,
+                'total': total,
+                'pages': (total + limit - 1) // limit
+            }
+        })
     except Exception as e:
         logger.error(f"Get licenses error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi lấy danh sách license'}), 500
+        return jsonify({'success': False, 'message': 'Error getting licenses'}), 500
 
 @app.route('/api/admin/licenses/create', methods=['POST'])
 @login_required
@@ -452,10 +477,9 @@ def create_license():
     try:
         data = request.get_json()
         
-        # Validate input
         product = data.get('product', '').strip()
         if not product:
-            return jsonify({'success': False, 'message': 'Vui lòng nhập tên sản phẩm'}), 400
+            return jsonify({'success': False, 'message': 'Product name is required'}), 400
         
         custom_key = data.get('custom_key', '').strip()
         is_custom = bool(custom_key)
@@ -467,14 +491,14 @@ def create_license():
             cursor.execute('SELECT id FROM licenses WHERE license_key = ?', (custom_key.upper(),))
             if cursor.fetchone():
                 conn.close()
-                return jsonify({'success': False, 'message': 'License key đã tồn tại'}), 400
+                return jsonify({'success': False, 'message': 'License key already exists'}), 400
         
         # Generate license key
         license_key = generate_license_key(custom_key=custom_key)
         if not license_key:
-            return jsonify({'success': False, 'message': 'License key không hợp lệ. Sử dụng chữ hoa, số và dấu gạch ngang'}), 400
+            return jsonify({'success': False, 'message': 'Invalid license key format'}), 400
         
-        # Calculate expiry date (24h/day)
+        # Calculate expiry (24h/day)
         custom_days = int(data.get('custom_days', 30))
         expires_at = (datetime.now() + timedelta(days=custom_days)).strftime('%Y-%m-%d %H:%M:%S')
         
@@ -505,7 +529,7 @@ def create_license():
         conn.commit()
         conn.close()
         
-        log_action('CREATE_LICENSE', {
+        log_activity('CREATE_LICENSE', {
             'license_id': license_id,
             'license_key': license_key,
             'product': product,
@@ -515,78 +539,96 @@ def create_license():
         
         return jsonify({
             'success': True, 
-            'message': 'Tạo license thành công',
+            'message': 'License created successfully',
             'license_key': license_key,
             'expires_at': expires_at,
             'is_custom': is_custom
         })
     except Exception as e:
         logger.error(f"Create license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi tạo license'}), 500
+        return jsonify({'success': False, 'message': 'Error creating license'}), 500
 
-@app.route('/api/admin/licenses/update/<int:license_id>', methods=['POST'])
+@app.route('/api/admin/licenses/<int:license_id>', methods=['GET'])
 @login_required
-def update_license(license_id):
+def get_license_details(license_id):
     try:
-        data = request.get_json()
-        
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get current license
         cursor.execute('SELECT * FROM licenses WHERE id = ?', (license_id,))
         license = cursor.fetchone()
+        
         if not license:
             conn.close()
-            return jsonify({'success': False, 'message': 'License không tồn tại'}), 404
+            return jsonify({'success': False, 'message': 'License not found'}), 404
         
-        # Update license
-        cursor.execute('''
-            UPDATE licenses SET 
-                product = ?, owner = ?, status = ?, max_devices = ?, 
-                notes = ?, hwid_lock = ?, ip_lock = ?, custom_days = ?, auto_renew = ?
-            WHERE id = ?
-        ''', (
-            data.get('product', license['product']),
-            data.get('owner', license['owner']),
-            data.get('status', license['status']),
-            int(data.get('max_devices', license['max_devices'])),
-            data.get('notes', license['notes']),
-            data.get('hwid_lock', license['hwid_lock']),
-            data.get('ip_lock', license['ip_lock']),
-            int(data.get('custom_days', license['custom_days'])),
-            bool(data.get('auto_renew', license['auto_renew'])),
-            license_id
-        ))
+        # Get activations
+        cursor.execute('SELECT * FROM license_activations WHERE license_id = ? ORDER BY activated_at DESC', (license_id,))
+        activations = cursor.fetchall()
         
-        conn.commit()
         conn.close()
         
-        log_action('UPDATE_LICENSE', {
-            'license_id': license_id,
-            'changes': data
-        })
+        # Format license data
+        license_data = {
+            'id': license['id'],
+            'license_key': license['license_key'],
+            'product': license['product'],
+            'owner': license['owner'] or '',
+            'status': license['status'],
+            'created_at': license['created_at'],
+            'expires_at': license['expires_at'],
+            'max_devices': license['max_devices'],
+            'notes': license['notes'],
+            'hwid_lock': license['hwid_lock'],
+            'ip_lock': license['ip_lock'],
+            'total_activations': license['total_activations'],
+            'last_active': license['last_active'],
+            'custom_days': license['custom_days'],
+            'auto_renew': bool(license['auto_renew']),
+            'reset_count': license['reset_count'],
+            'last_reset': license['last_reset'],
+            'is_custom_key': bool(license['is_custom_key'])
+        }
         
-        return jsonify({'success': True, 'message': 'Cập nhật license thành công'})
+        # Format activations
+        activations_list = []
+        for act in activations:
+            activations_list.append({
+                'id': act['id'],
+                'hwid': act['hwid'],
+                'ip_address': act['ip_address'],
+                'device_name': act['device_name'],
+                'country': act['country'],
+                'activated_at': act['activated_at'],
+                'last_check': act['last_check'],
+                'is_active': bool(act['is_active'])
+            })
+        
+        return jsonify({
+            'success': True,
+            'license': license_data,
+            'activations': activations_list
+        })
     except Exception as e:
-        logger.error(f"Update license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi cập nhật license'}), 500
+        logger.error(f"License details error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting license details'}), 500
 
-@app.route('/api/admin/licenses/reset/<int:license_id>', methods=['POST'])
+@app.route('/api/admin/licenses/<int:license_id>/reset', methods=['POST'])
 @login_required
 def reset_license(license_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get current license
+        # Check if license exists
         cursor.execute('SELECT * FROM licenses WHERE id = ?', (license_id,))
         license = cursor.fetchone()
+        
         if not license:
             conn.close()
-            return jsonify({'success': False, 'message': 'License không tồn tại'}), 404
+            return jsonify({'success': False, 'message': 'License not found'}), 404
         
-        # Reset activations
+        # Delete all activations
         cursor.execute('DELETE FROM license_activations WHERE license_id = ?', (license_id,))
         
         # Reset license stats
@@ -603,17 +645,17 @@ def reset_license(license_id):
         conn.commit()
         conn.close()
         
-        log_action('RESET_LICENSE', {
+        log_activity('RESET_LICENSE', {
             'license_id': license_id,
             'license_key': license['license_key']
         })
         
-        return jsonify({'success': True, 'message': 'Đã reset license thành công. Tất cả activations đã bị xóa.'})
+        return jsonify({'success': True, 'message': 'License reset successfully'})
     except Exception as e:
         logger.error(f"Reset license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi reset license'}), 500
+        return jsonify({'success': False, 'message': 'Error resetting license'}), 500
 
-@app.route('/api/admin/licenses/extend/<int:license_id>', methods=['POST'])
+@app.route('/api/admin/licenses/<int:license_id>/extend', methods=['POST'])
 @login_required
 def extend_license(license_id):
     try:
@@ -623,12 +665,12 @@ def extend_license(license_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get current license
         cursor.execute('SELECT * FROM licenses WHERE id = ?', (license_id,))
         license = cursor.fetchone()
+        
         if not license:
             conn.close()
-            return jsonify({'success': False, 'message': 'License không tồn tại'}), 404
+            return jsonify({'success': False, 'message': 'License not found'}), 404
         
         # Calculate new expiry (24h/day)
         if license['expires_at']:
@@ -652,28 +694,27 @@ def extend_license(license_id):
         conn.commit()
         conn.close()
         
-        log_action('EXTEND_LICENSE', {
+        log_activity('EXTEND_LICENSE', {
             'license_id': license_id,
             'license_key': license['license_key'],
-            'days': days,
-            'new_expiry': new_expiry.strftime('%Y-%m-%d %H:%M:%S')
+            'days': days
         })
         
         return jsonify({
             'success': True, 
-            'message': f'Đã gia hạn license thêm {days} ngày (24h/ngày)',
+            'message': f'License extended by {days} days',
             'new_expiry': new_expiry.strftime('%Y-%m-%d %H:%M:%S')
         })
     except Exception as e:
         logger.error(f"Extend license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi gia hạn license'}), 500
+        return jsonify({'success': False, 'message': 'Error extending license'}), 500
 
-@app.route('/api/admin/licenses/ban/<int:license_id>', methods=['POST'])
+@app.route('/api/admin/licenses/<int:license_id>/ban', methods=['POST'])
 @login_required
 def ban_license(license_id):
     try:
         data = request.get_json()
-        reason = data.get('reason', 'Vi phạm điều khoản')
+        reason = data.get('reason', 'Violation of terms')
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -688,17 +729,17 @@ def ban_license(license_id):
         conn.commit()
         conn.close()
         
-        log_action('BAN_LICENSE', {
+        log_activity('BAN_LICENSE', {
             'license_id': license_id,
             'reason': reason
         })
         
-        return jsonify({'success': True, 'message': 'Đã khóa license thành công'})
+        return jsonify({'success': True, 'message': 'License banned successfully'})
     except Exception as e:
         logger.error(f"Ban license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi khóa license'}), 500
+        return jsonify({'success': False, 'message': 'Error banning license'}), 500
 
-@app.route('/api/admin/licenses/delete/<int:license_id>', methods=['POST'])
+@app.route('/api/admin/licenses/<int:license_id>', methods=['DELETE'])
 @login_required
 def delete_license(license_id):
     try:
@@ -719,138 +760,101 @@ def delete_license(license_id):
             conn.commit()
             conn.close()
             
-            log_action('DELETE_LICENSE', {'license_key': license['license_key']})
+            log_activity('DELETE_LICENSE', {'license_key': license['license_key']})
             
-            return jsonify({'success': True, 'message': 'Đã xóa license thành công'})
+            return jsonify({'success': True, 'message': 'License deleted successfully'})
         else:
             conn.close()
-            return jsonify({'success': False, 'message': 'License không tồn tại'}), 404
+            return jsonify({'success': False, 'message': 'License not found'}), 404
     except Exception as e:
         logger.error(f"Delete license error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi xóa license'}), 500
+        return jsonify({'success': False, 'message': 'Error deleting license'}), 500
 
-@app.route('/api/admin/licenses/bulk', methods=['POST'])
+# ============ SERVER KEY MANAGEMENT ============
+@app.route('/api/admin/server-keys', methods=['GET'])
 @login_required
-def bulk_license_actions():
+def get_server_keys():
     try:
-        data = request.get_json()
-        action = data.get('action')
-        license_ids = data.get('license_ids', [])
-        
-        if not license_ids:
-            return jsonify({'success': False, 'message': 'Vui lòng chọn ít nhất một license'}), 400
-        
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        if action == 'delete':
-            # Delete activations first
-            cursor.execute('DELETE FROM license_activations WHERE license_id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            # Delete licenses
-            cursor.execute('DELETE FROM licenses WHERE id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            message = f'Đã xóa {len(license_ids)} license'
-            
-        elif action == 'activate':
-            cursor.execute('UPDATE licenses SET status = "active" WHERE id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            message = f'Đã kích hoạt {len(license_ids)} license'
-            
-        elif action == 'deactivate':
-            cursor.execute('UPDATE licenses SET status = "inactive" WHERE id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            message = f'Đã vô hiệu hóa {len(license_ids)} license'
-            
-        elif action == 'ban':
-            cursor.execute('UPDATE licenses SET status = "banned" WHERE id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            message = f'Đã khóa {len(license_ids)} license'
-            
-        elif action == 'reset':
-            # Delete activations
-            cursor.execute('DELETE FROM license_activations WHERE license_id IN ({})'.format(
-                ','.join('?' for _ in license_ids)
-            ), license_ids)
-            
-            # Reset licenses
-            cursor.execute('''
-                UPDATE licenses SET 
-                    total_activations = 0,
-                    last_active = NULL,
-                    reset_count = reset_count + 1,
-                    last_reset = CURRENT_TIMESTAMP,
-                    status = 'active'
-                WHERE id IN ({})
-            '''.format(','.join('?' for _ in license_ids)), license_ids)
-            
-            message = f'Đã reset {len(license_ids)} license'
-            
-        else:
-            conn.close()
-            return jsonify({'success': False, 'message': 'Hành động không hợp lệ'}), 400
-        
-        conn.commit()
+        cursor.execute('SELECT * FROM server_keys ORDER BY created_at DESC')
+        rows = cursor.fetchall()
         conn.close()
         
-        log_action('BULK_ACTION', {
-            'action': action,
-            'count': len(license_ids)
-        })
+        keys = []
+        for row in rows:
+            keys.append({
+                'id': row['id'],
+                'key_name': row['key_name'],
+                'server_key': row['server_key'],
+                'status': row['status'],
+                'permissions': row['permissions'],
+                'created_at': row['created_at'],
+                'last_used': row['last_used']
+            })
         
-        return jsonify({'success': True, 'message': message})
+        return jsonify({'success': True, 'data': keys})
     except Exception as e:
-        logger.error(f"Bulk action error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi thực hiện hành động'}), 500
+        logger.error(f"Get server keys error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting server keys'}), 500
 
-@app.route('/api/admin/licenses/activations/<int:license_id>')
+@app.route('/api/admin/server-keys/create', methods=['POST'])
 @login_required
-def get_license_activations(license_id):
+def create_server_key():
     try:
+        data = request.get_json()
+        key_name = data.get('key_name', '').strip()
+        
+        if not key_name:
+            return jsonify({'success': False, 'message': 'Key name is required'}), 400
+        
+        server_key = f"server_{secrets.token_hex(24)}"
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT * FROM license_activations 
-            WHERE license_id = ? 
-            ORDER BY activated_at DESC
-        ''', (license_id,))
+            INSERT INTO server_keys (key_name, server_key, permissions)
+            VALUES (?, ?, ?)
+        ''', (key_name, server_key, data.get('permissions', 'all')))
         
-        rows = cursor.fetchall()
+        conn.commit()
         conn.close()
         
-        activations = []
-        for row in rows:
-            activations.append({
-                'id': row['id'],
-                'hwid': row['hwid'],
-                'ip_address': row['ip_address'],
-                'device_name': row['device_name'],
-                'activated_at': row['activated_at'],
-                'last_check': row['last_check'],
-                'is_active': bool(row['is_active'])
-            })
+        log_activity('CREATE_SERVER_KEY', {'key_name': key_name})
         
-        return jsonify({'success': True, 'data': activations})
+        return jsonify({
+            'success': True, 
+            'message': 'Server key created successfully',
+            'server_key': server_key
+        })
     except Exception as e:
-        logger.error(f"Get activations error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi lấy danh sách activations'}), 500
+        logger.error(f"Create server key error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error creating server key'}), 500
+
+@app.route('/api/admin/server-keys/<int:key_id>/delete', methods=['POST'])
+@login_required
+def delete_server_key(key_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM server_keys WHERE id = ?', (key_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        log_activity('DELETE_SERVER_KEY', {'key_id': key_id})
+        
+        return jsonify({'success': True, 'message': 'Server key deleted successfully'})
+    except Exception as e:
+        logger.error(f"Delete server key error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error deleting server key'}), 500
 
 # ============ API KEY MANAGEMENT ============
-
-@app.route('/api/admin/apikeys')
+@app.route('/api/admin/api-keys', methods=['GET'])
 @login_required
-def get_apikeys():
+def get_api_keys():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -858,89 +862,59 @@ def get_apikeys():
         rows = cursor.fetchall()
         conn.close()
         
-        apikeys = []
+        keys = []
         for row in rows:
-            apikeys.append({
+            keys.append({
                 'id': row['id'],
-                'key': row['api_key'],
-                'name': row['name'],
+                'key_name': row['key_name'],
+                'api_key': row['api_key'],
                 'status': row['status'],
                 'created_at': row['created_at'],
                 'last_used': row['last_used']
             })
         
-        return jsonify({'success': True, 'data': apikeys})
+        return jsonify({'success': True, 'data': keys})
     except Exception as e:
         logger.error(f"Get API keys error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi lấy API keys'}), 500
+        return jsonify({'success': False, 'message': 'Error getting API keys'}), 500
 
-@app.route('/api/admin/apikeys/create', methods=['POST'])
+@app.route('/api/admin/api-keys/create', methods=['POST'])
 @login_required
-def create_apikey():
+def create_api_key():
     try:
         data = request.get_json()
-        name = data.get('name', '').strip()
+        key_name = data.get('key_name', '').strip()
         
-        if not name:
-            return jsonify({'success': False, 'message': 'Vui lòng nhập tên API Key'}), 400
+        if not key_name:
+            return jsonify({'success': False, 'message': 'Key name is required'}), 400
         
-        api_key = f"sk_{secrets.token_hex(16)}"
+        api_key = f"api_{secrets.token_hex(24)}"
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO api_keys (api_key, name, status)
-            VALUES (?, ?, ?)
-        ''', (api_key, name, 'active'))
+            INSERT INTO api_keys (key_name, api_key)
+            VALUES (?, ?)
+        ''', (key_name, api_key))
         
         conn.commit()
         conn.close()
         
-        log_action('CREATE_API_KEY', {'name': name})
+        log_activity('CREATE_API_KEY', {'key_name': key_name})
         
         return jsonify({
             'success': True, 
-            'message': 'Tạo API key thành công',
+            'message': 'API key created successfully',
             'api_key': api_key
         })
     except Exception as e:
         logger.error(f"Create API key error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi tạo API key'}), 500
+        return jsonify({'success': False, 'message': 'Error creating API key'}), 500
 
-@app.route('/api/admin/apikeys/update/<int:key_id>', methods=['POST'])
+@app.route('/api/admin/api-keys/<int:key_id>/delete', methods=['POST'])
 @login_required
-def update_apikey(key_id):
-    try:
-        data = request.get_json()
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE api_keys SET 
-                name = ?, 
-                status = ?
-            WHERE id = ?
-        ''', (
-            data.get('name', '').strip(),
-            data.get('status', 'active'),
-            key_id
-        ))
-        
-        conn.commit()
-        conn.close()
-        
-        log_action('UPDATE_API_KEY', {'key_id': key_id, 'changes': data})
-        
-        return jsonify({'success': True, 'message': 'Cập nhật API key thành công'})
-    except Exception as e:
-        logger.error(f"Update API key error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi cập nhật API key'}), 500
-
-@app.route('/api/admin/apikeys/delete/<int:key_id>', methods=['POST'])
-@login_required
-def delete_apikey(key_id):
+def delete_api_key(key_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -950,99 +924,98 @@ def delete_apikey(key_id):
         conn.commit()
         conn.close()
         
-        log_action('DELETE_API_KEY', {'key_id': key_id})
+        log_activity('DELETE_API_KEY', {'key_id': key_id})
         
-        return jsonify({'success': True, 'message': 'Đã xóa API key'})
+        return jsonify({'success': True, 'message': 'API key deleted successfully'})
     except Exception as e:
         logger.error(f"Delete API key error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi xóa API key'}), 500
+        return jsonify({'success': False, 'message': 'Error deleting API key'}), 500
 
 # ============ ACTIVITY LOGS ============
-
-@app.route('/api/admin/activity')
+@app.route('/api/admin/activity', methods=['GET'])
 @login_required
-def get_activity():
+def get_activity_logs():
     try:
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 50))
+        offset = (page - 1) * limit
+        
         conn = get_db_connection()
         cursor = conn.cursor()
+        
         cursor.execute('''
-            SELECT al.action, al.details, al.created_at, au.username
-            FROM admin_logs al
+            SELECT al.*, au.username
+            FROM activity_logs al
             LEFT JOIN admin_users au ON al.admin_id = au.id
             ORDER BY al.created_at DESC
-            LIMIT 50
-        ''')
+            LIMIT ? OFFSET ?
+        ''', (limit, offset))
+        
         rows = cursor.fetchall()
+        
+        cursor.execute('SELECT COUNT(*) FROM activity_logs')
+        total = cursor.fetchone()[0]
+        
         conn.close()
         
-        activities = []
+        logs = []
         for row in rows:
-            activities.append({
+            logs.append({
+                'id': row['id'],
                 'action': row['action'],
                 'details': json.loads(row['details']) if row['details'] else None,
-                'created_at': row['created_at'],
-                'username': row['username'] or 'System'
+                'username': row['username'] or 'System',
+                'ip_address': row['ip_address'],
+                'created_at': row['created_at']
             })
         
-        return jsonify({'success': True, 'data': activities})
+        return jsonify({
+            'success': True,
+            'data': logs,
+            'pagination': {
+                'page': page,
+                'limit': limit,
+                'total': total,
+                'pages': (total + limit - 1) // limit
+            }
+        })
     except Exception as e:
-        logger.error(f"Activity error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Lỗi khi lấy hoạt động'}), 500
+        logger.error(f"Activity logs error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting activity logs'}), 500
 
-# ============ DEBUG & PUBLIC API ============
-
-@app.route('/api/admin/debug')
-def debug_info():
-    return jsonify({
-        'status': 'online',
-        'server_time': datetime.now().isoformat(),
-        'version': '2.0.0',
-        'database': 'ready'
-    })
-
-@app.route('/api/verify', methods=['POST'])
+# ============ PUBLIC VERIFICATION API ============
+@app.route('/api/v1/verify', methods=['POST'])
+@api_key_required
 def verify_license():
     try:
         data = request.get_json()
         license_key = data.get('license_key', '').strip().upper()
         hwid = data.get('hwid', '').strip()
+        device_name = data.get('device_name', '').strip()
         ip_address = request.remote_addr
         
-        api_key = request.headers.get('X-API-Key')
-        if not api_key:
-            return jsonify({'valid': False, 'message': 'API key required'}), 401
+        if not license_key:
+            return jsonify({'success': False, 'message': 'License key is required'}), 400
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Verify API key
-        cursor.execute('''
-            SELECT * FROM api_keys 
-            WHERE api_key = ? AND status = "active"
-        ''', (api_key,))
-        
-        valid_api_key = cursor.fetchone()
-        if not valid_api_key:
-            conn.close()
-            return jsonify({'valid': False, 'message': 'Invalid API key'}), 401
-        
-        # Update API key last used
-        cursor.execute('''
-            UPDATE api_keys SET last_used = CURRENT_TIMESTAMP WHERE api_key = ?
-        ''', (api_key,))
-        
-        # Verify license
+        # Get license
         cursor.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key,))
         license = cursor.fetchone()
         
         if not license:
             conn.close()
-            return jsonify({'valid': False, 'message': 'Invalid license'})
+            return jsonify({'success': False, 'message': 'Invalid license key'})
         
         # Check status
         if license['status'] != 'active':
             conn.close()
-            return jsonify({'valid': False, 'message': f'License is {license["status"]}'})
+            return jsonify({
+                'success': False,
+                'message': f'License is {license["status"]}',
+                'status': license['status']
+            })
         
         # Check expiration (24h/day)
         if license['expires_at']:
@@ -1052,7 +1025,7 @@ def verify_license():
                     cursor.execute('UPDATE licenses SET status = "expired" WHERE id = ?', (license['id'],))
                     conn.commit()
                     conn.close()
-                    return jsonify({'valid': False, 'message': 'License expired'})
+                    return jsonify({'success': False, 'message': 'License has expired'})
             except:
                 pass
         
@@ -1061,47 +1034,44 @@ def verify_license():
             allowed_hwids = [h.strip() for h in license['hwid_lock'].split(',') if h.strip()]
             if hwid and hwid not in allowed_hwids:
                 conn.close()
-                return jsonify({'valid': False, 'message': 'HWID not allowed'})
+                return jsonify({'success': False, 'message': 'HWID not authorized'})
         
         # Check IP lock
         if license['ip_lock']:
             allowed_ips = [ip.strip() for ip in license['ip_lock'].split(',') if ip.strip()]
             if ip_address and ip_address not in allowed_ips:
                 conn.close()
-                return jsonify({'valid': False, 'message': 'IP not allowed'})
+                return jsonify({'success': False, 'message': 'IP address not authorized'})
         
-        # Record activation
+        # Check if HWID is already activated
         if hwid:
-            cursor.execute('''
-                SELECT * FROM license_activations 
-                WHERE license_id = ? AND hwid = ?
-            ''', (license['id'], hwid))
+            cursor.execute('SELECT * FROM license_activations WHERE license_id = ? AND hwid = ?', (license['id'], hwid))
+            existing_activation = cursor.fetchone()
             
-            existing = cursor.fetchone()
-            
-            if existing:
+            if existing_activation:
                 # Update existing activation
                 cursor.execute('''
                     UPDATE license_activations SET 
                         is_active = 1,
                         last_check = CURRENT_TIMESTAMP,
+                        device_name = COALESCE(?, device_name),
                         ip_address = ?
                     WHERE id = ?
-                ''', (ip_address, existing['id']))
+                ''', (device_name, ip_address, existing_activation['id']))
             else:
-                # Check max devices
+                # Check max devices limit
                 cursor.execute('SELECT COUNT(*) FROM license_activations WHERE license_id = ? AND is_active = 1', (license['id'],))
                 active_count = cursor.fetchone()[0]
                 
                 if active_count >= license['max_devices']:
                     conn.close()
-                    return jsonify({'valid': False, 'message': 'Maximum devices reached'})
+                    return jsonify({'success': False, 'message': 'Maximum device limit reached'})
                 
                 # Create new activation
                 cursor.execute('''
-                    INSERT INTO license_activations (license_id, hwid, ip_address)
-                    VALUES (?, ?, ?)
-                ''', (license['id'], hwid, ip_address))
+                    INSERT INTO license_activations (license_id, hwid, device_name, ip_address)
+                    VALUES (?, ?, ?, ?)
+                ''', (license['id'], hwid, device_name, ip_address))
         
         # Update license stats
         cursor.execute('''
@@ -1115,31 +1085,402 @@ def verify_license():
         conn.close()
         
         # Calculate days left (24h/day)
-        days_left = None
+        days_left = 0
         if license['expires_at']:
             try:
                 expires = datetime.strptime(license['expires_at'], '%Y-%m-%d %H:%M:%S')
                 days_left = max(0, (expires - datetime.now()).days)
             except:
-                days_left = 0
+                pass
         
         return jsonify({
-            'valid': True,
-            'message': 'License valid',
-            'product': license['product'],
-            'max_devices': license['max_devices'],
-            'days_left': days_left,
-            'owner': license['owner']
+            'success': True,
+            'message': 'License is valid',
+            'license': {
+                'key': license['license_key'],
+                'product': license['product'],
+                'owner': license['owner'] or '',
+                'max_devices': license['max_devices'],
+                'days_left': days_left,
+                'status': license['status']
+            }
         })
     except Exception as e:
         logger.error(f"Verify license error: {str(e)}")
-        return jsonify({'valid': False, 'message': 'Server error'}), 500
+        return jsonify({'success': False, 'message': 'Server error'}), 500
+
+# ============ SERVER API (FOR SHELL SCRIPTS) ============
+@app.route('/api/server/licenses', methods=['GET'])
+@server_key_required
+def server_get_licenses():
+    try:
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 100))
+        offset = (page - 1) * limit
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT license_key, product, owner, status, expires_at, 
+                   max_devices, total_activations, created_at
+            FROM licenses 
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+        ''', (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        licenses = []
+        for row in rows:
+            licenses.append({
+                'license_key': row['license_key'],
+                'product': row['product'],
+                'owner': row['owner'] or '',
+                'status': row['status'],
+                'expires_at': row['expires_at'],
+                'max_devices': row['max_devices'],
+                'total_activations': row['total_activations'],
+                'created_at': row['created_at']
+            })
+        
+        return jsonify({'success': True, 'data': licenses})
+    except Exception as e:
+        logger.error(f"Server get licenses error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting licenses'}), 500
+
+@app.route('/api/server/licenses/create', methods=['POST'])
+@server_key_required
+def server_create_license():
+    try:
+        data = request.get_json()
+        
+        product = data.get('product', 'Default Product').strip()
+        if not product:
+            return jsonify({'success': False, 'message': 'Product name is required'}), 400
+        
+        # Generate license key
+        license_key = generate_license_key()
+        
+        # Calculate expiry (24h/day)
+        days = int(data.get('days', 30))
+        expires_at = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO licenses (license_key, product, owner, expires_at, custom_days, max_devices)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            license_key,
+            product,
+            data.get('owner', '').strip(),
+            expires_at,
+            days,
+            int(data.get('max_devices', 1))
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True, 
+            'message': 'License created successfully',
+            'license_key': license_key,
+            'expires_at': expires_at,
+            'days': days
+        })
+    except Exception as e:
+        logger.error(f"Server create license error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error creating license'}), 500
+
+@app.route('/api/server/licenses/<string:license_key>', methods=['GET'])
+@server_key_required
+def server_get_license(license_key):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key.upper(),))
+        license = cursor.fetchone()
+        
+        if not license:
+            conn.close()
+            return jsonify({'success': False, 'message': 'License not found'}), 404
+        
+        # Get activations
+        cursor.execute('SELECT * FROM license_activations WHERE license_id = ?', (license['id'],))
+        activations = cursor.fetchall()
+        
+        conn.close()
+        
+        # Calculate days left
+        days_left = 0
+        if license['expires_at']:
+            try:
+                expires = datetime.strptime(license['expires_at'], '%Y-%m-%d %H:%M:%S')
+                days_left = max(0, (expires - datetime.now()).days)
+            except:
+                pass
+        
+        license_data = {
+            'license_key': license['license_key'],
+            'product': license['product'],
+            'owner': license['owner'] or '',
+            'status': license['status'],
+            'created_at': license['created_at'],
+            'expires_at': license['expires_at'],
+            'max_devices': license['max_devices'],
+            'notes': license['notes'],
+            'hwid_lock': license['hwid_lock'],
+            'ip_lock': license['ip_lock'],
+            'total_activations': license['total_activations'],
+            'last_active': license['last_active'],
+            'days_left': days_left
+        }
+        
+        activations_list = []
+        for act in activations:
+            activations_list.append({
+                'hwid': act['hwid'],
+                'ip_address': act['ip_address'],
+                'device_name': act['device_name'],
+                'activated_at': act['activated_at'],
+                'last_check': act['last_check'],
+                'is_active': bool(act['is_active'])
+            })
+        
+        return jsonify({
+            'success': True,
+            'license': license_data,
+            'activations': activations_list
+        })
+    except Exception as e:
+        logger.error(f"Server get license error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error getting license'}), 500
+
+@app.route('/api/server/licenses/<string:license_key>/reset', methods=['POST'])
+@server_key_required
+def server_reset_license(license_key):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key.upper(),))
+        license = cursor.fetchone()
+        
+        if not license:
+            conn.close()
+            return jsonify({'success': False, 'message': 'License not found'}), 404
+        
+        # Delete all activations
+        cursor.execute('DELETE FROM license_activations WHERE license_id = ?', (license['id'],))
+        
+        # Reset license
+        cursor.execute('''
+            UPDATE licenses SET 
+                total_activations = 0,
+                last_active = NULL,
+                reset_count = reset_count + 1,
+                last_reset = CURRENT_TIMESTAMP,
+                status = 'active'
+            WHERE id = ?
+        ''', (license['id'],))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'License reset successfully'})
+    except Exception as e:
+        logger.error(f"Server reset license error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error resetting license'}), 500
+
+@app.route('/api/server/licenses/<string:license_key>/ban', methods=['POST'])
+@server_key_required
+def server_ban_license(license_key):
+    try:
+        reason = request.json.get('reason', 'Violation detected')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE licenses SET 
+                status = 'banned',
+                notes = COALESCE(notes || ?, ?)
+            WHERE license_key = ?
+        ''', ('\n[BANNED] ' + reason, '[BANNED] ' + reason, license_key.upper()))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'License banned successfully'})
+    except Exception as e:
+        logger.error(f"Server ban license error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error banning license'}), 500
+
+@app.route('/api/server/licenses/<string:license_key>/extend', methods=['POST'])
+@server_key_required
+def server_extend_license(license_key):
+    try:
+        days = int(request.json.get('days', 30))
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key.upper(),))
+        license = cursor.fetchone()
+        
+        if not license:
+            conn.close()
+            return jsonify({'success': False, 'message': 'License not found'}), 404
+        
+        # Calculate new expiry
+        if license['expires_at']:
+            try:
+                current_expiry = datetime.strptime(license['expires_at'], '%Y-%m-%d %H:%M:%S')
+                new_expiry = current_expiry + timedelta(days=days)
+            except:
+                new_expiry = datetime.now() + timedelta(days=days)
+        else:
+            new_expiry = datetime.now() + timedelta(days=days)
+        
+        cursor.execute('''
+            UPDATE licenses SET 
+                expires_at = ?,
+                status = 'active',
+                custom_days = custom_days + ?
+            WHERE license_key = ?
+        ''', (new_expiry.strftime('%Y-%m-%d %H:%M:%S'), days, license_key.upper()))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True, 
+            'message': f'License extended by {days} days',
+            'new_expiry': new_expiry.strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        logger.error(f"Server extend license error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Error extending license'}), 500
+
+# ============ SYSTEM ENDPOINTS ============
+@app.route('/api/system/status', methods=['GET'])
+def system_status():
+    return jsonify({
+        'status': 'online',
+        'timestamp': datetime.now().isoformat(),
+        'version': '2.0.0',
+        'endpoints': {
+            'admin_panel': '/admin',
+            'verification': '/api/v1/verify',
+            'server_api': '/api/server/*',
+            'client_example': '/api/client/example.sh'
+        }
+    })
+
+@app.route('/api/client/example.sh', methods=['GET'])
+def client_example():
+    """Example shell script for client verification"""
+    example_script = '''#!/bin/bash
+# License Verification Script
+# Usage: ./verify.sh LICENSE_KEY HWID
+
+LICENSE_KEY="$1"
+HWID="$2"
+API_KEY="YOUR_API_KEY_HERE"
+API_URL="https://your-domain.com/api/v1/verify"
+
+if [ -z "$LICENSE_KEY" ] || [ -z "$HWID" ]; then
+    echo "Usage: $0 LICENSE_KEY HWID"
+    exit 1
+fi
+
+response=$(curl -s -X POST "$API_URL" \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: $API_KEY" \\
+  -d "{\\"license_key\\": \\"$LICENSE_KEY\\", \\"hwid\\": \\"$HWID\\"}")
+
+if echo "$response" | grep -q '"success":true'; then
+    echo "✅ License is valid!"
+    echo "$response" | python3 -m json.tool
+    exit 0
+else
+    echo "❌ License verification failed"
+    echo "$response"
+    exit 1
+fi
+'''
+    return example_script, 200, {'Content-Type': 'text/plain'}
+
+@app.route('/api/server/example.sh', methods=['GET'])
+def server_example():
+    """Example shell script for server management"""
+    example_script = '''#!/bin/bash
+# Server Management Script
+# For managing licenses via server API
+
+SERVER_KEY="YOUR_SERVER_KEY_HERE"
+BASE_URL="https://your-domain.com/api/server"
+
+function create_license() {
+    local product="$1"
+    local days="$2"
+    local owner="$3"
+    
+    response=$(curl -s -X POST "$BASE_URL/licenses/create" \\
+      -H "Content-Type: application/json" \\
+      -H "X-Server-Key: $SERVER_KEY" \\
+      -d "{\\"product\\": \\"$product\\", \\"days\\": $days, \\"owner\\": \\"$owner\\"}")
+    
+    echo "$response"
+}
+
+function get_license() {
+    local license_key="$1"
+    
+    response=$(curl -s -X GET "$BASE_URL/licenses/$license_key" \\
+      -H "X-Server-Key: $SERVER_KEY")
+    
+    echo "$response"
+}
+
+function reset_license() {
+    local license_key="$1"
+    
+    response=$(curl -s -X POST "$BASE_URL/licenses/$license_key/reset" \\
+      -H "X-Server-Key: $SERVER_KEY")
+    
+    echo "$response"
+}
+
+function extend_license() {
+    local license_key="$1"
+    local days="$2"
+    
+    response=$(curl -s -X POST "$BASE_URL/licenses/$license_key/extend" \\
+      -H "Content-Type: application/json" \\
+      -H "X-Server-Key: $SERVER_KEY" \\
+      -d "{\\"days\\": $days}")
+    
+    echo "$response"
+}
+
+# Usage examples:
+# create_license "MyProduct" 30 "John Doe"
+# get_license "LIC-XXXXXXXXXXXX"
+# reset_license "LIC-XXXXXXXXXXXX"
+# extend_license "LIC-XXXXXXXXXXXX" 30
+'''
+    return example_script, 200, {'Content-Type': 'text/plain'}
 
 # ============ ERROR HANDLERS ============
-
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'success': False, 'message': 'Not found'}), 404
+    return jsonify({'success': False, 'message': 'Endpoint not found'}), 404
 
 @app.errorhandler(500)
 def server_error(error):
@@ -1147,10 +1488,16 @@ def server_error(error):
     return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
 # ============ MAIN ============
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV') == 'development'
     
-    logger.info(f"Starting License Admin Panel v2.0 on port {port}")
+    logger.info(f"🚀 Starting License Admin System v2.0 on port {port}")
+    logger.info(f"📊 Admin Panel: http://localhost:{port}/admin")
+    logger.info(f"🔐 Login: admin / Anhhuy123")
+    logger.info(f"🌐 API Documentation:")
+    logger.info(f"   - Client Verification: POST /api/v1/verify")
+    logger.info(f"   - Server Management: /api/server/*")
+    logger.info(f"   - System Status: GET /api/system/status")
+    
     app.run(host='0.0.0.0', port=port, debug=debug)
