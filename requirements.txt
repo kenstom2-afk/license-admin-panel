@@ -4,5 +4,5 @@ cryptography==41.0.7
 argon2-cffi==23.1.0
 gunicorn==20.1.0
 psycopg2-binary==2.9.9
-SQLAlchemy==1.4.47
+SQLAlchemy==2.0.23
 python-dotenv==1.0.0
