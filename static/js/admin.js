@@ -1,65 +1,95 @@
-// Global variables
-let currentPage = 1;
-const licensesPerPage = 10;
+// ============ GLOBAL VARIABLES ============
+let currentLicensePage = 1;
+const licensesPerPage = 20;
 let totalLicenses = 0;
 let selectedLicenses = new Set();
 
-// Toast notification
+// ============ UTILITY FUNCTIONS ============
+
+// Show toast notification
 function showToast(message, type = 'info') {
-    const toast = document.createElement('div');
+    const toast = document.getElementById('toast');
+    const icon = document.getElementById('toastIcon');
+    const msg = document.getElementById('toastMessage');
+    
     const icons = {
-        success: '✓',
-        error: '✗',
-        info: 'ℹ',
-        warning: '⚠'
+        success: 'fa-check-circle',
+        error: 'fa-exclamation-circle',
+        warning: 'fa-exclamation-triangle',
+        info: 'fa-info-circle'
     };
     
     const colors = {
         success: 'bg-green-500',
         error: 'bg-red-500',
-        info: 'bg-blue-500',
-        warning: 'bg-yellow-500'
+        warning: 'bg-yellow-500',
+        info: 'bg-blue-500'
     };
     
-    toast.className = `fixed top-4 right-4 ${colors[type] || 'bg-gray-800'} text-white px-6 py-3 rounded-lg shadow-lg z-50 transform transition-transform duration-300`;
-    toast.innerHTML = `
-        <div class="flex items-center space-x-3">
-            <span class="font-bold">${icons[type] || 'ℹ'}</span>
-            <span>${message}</span>
-        </div>
-    `;
+    // Remove all color classes
+    toast.className = toast.className.replace(/bg-(green|red|yellow|blue|gray)-500/g, '');
     
-    document.body.appendChild(toast);
+    // Add current color
+    toast.classList.add(colors[type] || 'bg-gray-800');
+    icon.className = `fas ${icons[type] || 'fa-info-circle'}`;
+    msg.textContent = message;
     
-    // Animate in
+    // Show toast
+    toast.classList.remove('translate-x-full');
+    
+    // Hide after 3 seconds
     setTimeout(() => {
-        toast.style.transform = 'translateX(0)';
-    }, 10);
-    
-    // Auto remove after 3 seconds
-    setTimeout(() => {
-        toast.style.transform = 'translateX(100%)';
-        setTimeout(() => {
-            if (toast.parentNode) {
-                toast.parentNode.removeChild(toast);
-            }
-        }, 300);
+        toast.classList.add('translate-x-full');
     }, 3000);
 }
 
-// Logout function
+// Copy to clipboard
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('Copied to clipboard!', 'success');
+    }).catch(err => {
+        showToast('Failed to copy', 'error');
+        console.error('Copy error:', err);
+    });
+}
+
+// Format date
+function formatDate(dateString) {
+    if (!dateString) return 'Never';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+}
+
+// Calculate days left
+function calculateDaysLeft(expiresAt) {
+    if (!expiresAt) return null;
+    const now = new Date();
+    const expiry = new Date(expiresAt);
+    const diff = expiry - now;
+    return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
+}
+
+// ============ AUTH FUNCTIONS ============
+
+// Logout
 async function logout() {
-    const { value: confirm } = await Swal.fire({
-        title: 'Đăng xuất?',
-        text: 'Bạn có chắc chắn muốn đăng xuất?',
+    const { isConfirmed } = await Swal.fire({
+        title: 'Logout?',
+        text: 'Are you sure you want to logout?',
         icon: 'question',
         showCancelButton: true,
-        confirmButtonText: 'Đăng xuất',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Yes, logout',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#ef4444'
     });
     
-    if (confirm) {
+    if (isConfirmed) {
         try {
             const response = await fetch('/api/admin/logout', {
                 method: 'POST'
@@ -70,50 +100,117 @@ async function logout() {
             if (data.success) {
                 window.location.href = '/login';
             } else {
-                showToast('Lỗi khi đăng xuất', 'error');
+                showToast('Logout failed', 'error');
             }
         } catch (error) {
             console.error('Logout error:', error);
-            showToast('Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
 
-// Load stats
-async function loadStats() {
+// ============ DASHBOARD FUNCTIONS ============
+
+// Load dashboard stats
+async function loadDashboard() {
     try {
         const response = await fetch('/api/admin/stats');
-        const result = await response.json();
+        const data = await response.json();
         
-        if (result.success) {
-            const data = result.data;
-            document.getElementById('totalLicenses').textContent = data.total_licenses;
-            document.getElementById('activeLicenses').textContent = data.active_licenses;
-            document.getElementById('expiredLicenses').textContent = data.expired_licenses;
-            document.getElementById('todayLicenses').textContent = data.today_licenses;
-            document.getElementById('expiringSoon').textContent = data.expiring_soon;
-            document.getElementById('activeApiKeys').textContent = data.active_api_keys;
+        if (data.success) {
+            // Update stats
+            document.getElementById('totalLicenses').textContent = data.data.total_licenses;
+            document.getElementById('activeLicenses').textContent = data.data.active_licenses;
+            document.getElementById('expiredLicenses').textContent = data.data.expired_licenses;
+            document.getElementById('inactiveLicenses').textContent = data.data.inactive_licenses;
+            document.getElementById('bannedLicenses').textContent = data.data.banned_licenses;
+            document.getElementById('customKeys').textContent = data.data.custom_keys;
+            document.getElementById('serverKeys').textContent = data.data.active_server_keys;
+            document.getElementById('apiKeys').textContent = data.data.active_api_keys;
+            document.getElementById('todayLicenses').textContent = data.data.today_licenses;
             
-            // Update server status
-            const statusElement = document.getElementById('serverStatus');
-            if (statusElement) {
-                statusElement.innerHTML = `
-                    <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                    <span class="text-sm font-medium">Online</span>
-                `;
-            }
+            // Load recent activity
+            await loadRecentActivity();
         }
     } catch (error) {
-        console.error('Error loading stats:', error);
-        const statusElement = document.getElementById('serverStatus');
-        if (statusElement) {
-            statusElement.innerHTML = `
-                <div class="w-2 h-2 bg-red-400 rounded-full animate-pulse"></div>
-                <span class="text-sm font-medium">Offline</span>
-            `;
-        }
+        console.error('Dashboard error:', error);
     }
 }
+
+// Load recent activity
+async function loadRecentActivity() {
+    try {
+        const response = await fetch('/api/admin/activity?limit=10');
+        const data = await response.json();
+        
+        if (data.success) {
+            const container = document.getElementById('recentActivity');
+            container.innerHTML = '';
+            
+            if (data.data.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center py-4">No activity yet</p>';
+                return;
+            }
+            
+            data.data.forEach(log => {
+                const icon = getActivityIcon(log.action);
+                const color = getActivityColor(log.action);
+                
+                const item = `
+                    <div class="flex items-start space-x-3">
+                        <div class="${color} w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0">
+                            <i class="${icon} text-white text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex justify-between">
+                                <p class="font-medium text-gray-800">${formatAction(log.action)}</p>
+                                <span class="text-xs text-gray-500">${formatDate(log.created_at)}</span>
+                            </div>
+                            <p class="text-sm text-gray-600">by ${log.username}</p>
+                            ${log.details ? `<p class="text-xs text-gray-500 mt-1">${JSON.stringify(log.details)}</p>` : ''}
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += item;
+            });
+        }
+    } catch (error) {
+        console.error('Activity error:', error);
+    }
+}
+
+function getActivityIcon(action) {
+    switch(action) {
+        case 'LOGIN': return 'fas fa-sign-in-alt';
+        case 'LOGOUT': return 'fas fa-sign-out-alt';
+        case 'CREATE_LICENSE': return 'fas fa-plus-circle';
+        case 'DELETE_LICENSE': return 'fas fa-trash-alt';
+        case 'RESET_LICENSE': return 'fas fa-redo';
+        case 'EXTEND_LICENSE': return 'fas fa-calendar-plus';
+        case 'BAN_LICENSE': return 'fas fa-ban';
+        case 'CREATE_SERVER_KEY': return 'fas fa-key';
+        case 'CREATE_API_KEY': return 'fas fa-code';
+        default: return 'fas fa-info-circle';
+    }
+}
+
+function getActivityColor(action) {
+    switch(action) {
+        case 'LOGIN': return 'bg-green-500';
+        case 'CREATE_LICENSE': return 'bg-blue-500';
+        case 'CREATE_SERVER_KEY': return 'bg-purple-500';
+        case 'CREATE_API_KEY': return 'bg-orange-500';
+        case 'DELETE_LICENSE': return 'bg-red-500';
+        case 'RESET_LICENSE': return 'bg-yellow-500';
+        default: return 'bg-gray-500';
+    }
+}
+
+function formatAction(action) {
+    return action.replace(/_/g, ' ');
+}
+
+// ============ LICENSE FUNCTIONS ============
 
 // Load licenses
 async function loadLicenses() {
@@ -121,113 +218,89 @@ async function loadLicenses() {
         const search = document.getElementById('searchLicense').value;
         const status = document.getElementById('filterStatus').value;
         
-        let url = `/api/admin/licenses?page=${currentPage}&limit=${licensesPerPage}`;
+        let url = `/api/admin/licenses?page=${currentLicensePage}&limit=${licensesPerPage}`;
         if (search) url += `&search=${encodeURIComponent(search)}`;
         if (status) url += `&status=${status}`;
         
         const tbody = document.getElementById('licenseTableBody');
         tbody.innerHTML = `
             <tr>
-                <td colspan="7" class="px-4 py-8 text-center text-gray-500">
+                <td colspan="7" class="px-6 py-8 text-center text-gray-500">
                     <div class="flex justify-center">
                         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                     </div>
-                    <p class="mt-2">Đang tải dữ liệu...</p>
+                    <p class="mt-2">Loading licenses...</p>
                 </td>
             </tr>
         `;
         
         const response = await fetch(url);
-        const result = await response.json();
+        const data = await response.json();
         
-        if (result.success) {
-            const licenses = result.data;
-            totalLicenses = licenses.length;
+        if (data.success) {
+            totalLicenses = data.pagination.total;
             
             tbody.innerHTML = '';
             selectedLicenses.clear();
             
-            if (licenses.length === 0) {
+            if (data.data.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="7" class="px-4 py-8 text-center text-gray-500">
+                        <td colspan="7" class="px-6 py-8 text-center text-gray-500">
                             <i class="fas fa-inbox text-4xl mb-2 text-gray-300"></i>
-                            <p>Không tìm thấy license nào</p>
+                            <p>No licenses found</p>
+                            <button onclick="showCreateLicenseModal()" class="mt-4 px-4 py-2 btn-primary rounded-lg">
+                                <i class="fas fa-plus mr-2"></i> Create your first license
+                            </button>
                         </td>
                     </tr>
                 `;
-                updatePagination();
+                updateLicensePagination();
+                updateLicenseCount();
                 return;
             }
             
-            licenses.forEach(license => {
-                let statusBadge = '';
-                let statusColor = '';
-                
-                switch(license.status) {
-                    case 'active':
-                        statusBadge = 'Active';
-                        statusColor = 'bg-green-100 text-green-800';
-                        break;
-                    case 'inactive':
-                        statusBadge = 'Inactive';
-                        statusColor = 'bg-yellow-100 text-yellow-800';
-                        break;
-                    case 'expired':
-                        statusBadge = 'Expired';
-                        statusColor = 'bg-red-100 text-red-800';
-                        break;
-                    case 'banned':
-                        statusBadge = 'Banned';
-                        statusColor = 'bg-gray-100 text-gray-800';
-                        break;
-                }
-                
-                const expiresText = license.expires_at ? 
-                    new Date(license.expires_at).toLocaleDateString('vi-VN') : 
-                    'Không hết hạn';
-                
-                const daysLeft = license.days_left !== null ? 
-                    `<span class="text-xs ${license.days_left < 7 ? 'text-red-600 font-bold' : 'text-gray-500'}">
-                        (còn ${license.days_left} ngày)
-                    </span>` : '';
+            data.data.forEach(license => {
+                const statusClass = `status-${license.status}`;
+                const daysLeft = license.days_left !== null ? license.days_left : calculateDaysLeft(license.expires_at);
                 
                 const row = `
-                    <tr class="hover:bg-gray-50" data-license-id="${license.id}">
-                        <td class="px-4 py-3">
-                            <input type="checkbox" class="license-checkbox rounded" value="${license.id}">
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-4">
+                            <input type="checkbox" class="license-checkbox rounded border-gray-300" value="${license.id}">
                         </td>
-                        <td class="px-4 py-3">
-                            <div class="font-mono text-sm font-medium text-gray-900">${license.license_key}</div>
-                            <div class="text-xs text-gray-500">ID: ${license.id}</div>
+                        <td class="px-6 py-4">
+                            <div class="license-key text-sm font-mono">${license.license_key}</div>
+                            <div class="flex items-center space-x-2 mt-1">
+                                <span class="text-xs text-gray-500">ID: ${license.id}</span>
+                                ${license.is_custom_key ? '<span class="custom-key-badge text-xs px-2 py-1 rounded">Custom</span>' : ''}
+                            </div>
                         </td>
-                        <td class="px-4 py-3">
-                            <div class="text-sm text-gray-900 font-medium">${license.product}</div>
+                        <td class="px-6 py-4">
+                            <div class="font-medium">${license.product}</div>
                             <div class="text-xs text-gray-500">Devices: ${license.max_devices}</div>
                         </td>
-                        <td class="px-4 py-3">
-                            <div class="text-sm text-gray-900">${license.owner || '-'}</div>
+                        <td class="px-6 py-4">
+                            <div>${license.owner || '-'}</div>
                         </td>
-                        <td class="px-4 py-3">
-                            <span class="px-2 py-1 text-xs font-medium ${statusColor} rounded-full">${statusBadge}</span>
+                        <td class="px-6 py-4">
+                            <span class="status-badge ${statusClass}">${license.status}</span>
                             ${license.hwid_lock ? '<i class="fas fa-lock text-xs text-gray-400 ml-1" title="HWID Locked"></i>' : ''}
+                            ${license.ip_lock ? '<i class="fas fa-globe text-xs text-gray-400 ml-1" title="IP Locked"></i>' : ''}
                         </td>
-                        <td class="px-4 py-3">
-                            <div class="text-sm">${expiresText}</div>
-                            ${daysLeft}
+                        <td class="px-6 py-4">
+                            <div>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</div>
+                            ${daysLeft !== null ? `<div class="text-xs ${daysLeft < 7 ? 'text-red-600 font-bold' : 'text-gray-500'}">(${daysLeft} days left)</div>` : ''}
                         </td>
-                        <td class="px-4 py-3 whitespace-nowrap">
+                        <td class="px-6 py-4">
                             <div class="flex space-x-1">
-                                <button onclick="showLicenseDetails(${license.id})" class="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs" title="Chi tiết">
+                                <button onclick="showLicenseDetails(${license.id})" class="p-1 text-blue-500 hover:text-blue-700" title="View">
                                     <i class="fas fa-eye"></i>
                                 </button>
-                                <button onclick="editLicense(${license.id})" class="px-2 py-1 bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 transition text-xs" title="Sửa">
-                                    <i class="fas fa-edit"></i>
-                                </button>
-                                <button onclick="showLicenseActions(${license.id})" class="px-2 py-1 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition text-xs" title="Hành động">
+                                <button onclick="showLicenseActions(${license.id})" class="p-1 text-purple-500 hover:text-purple-700" title="Actions">
                                     <i class="fas fa-cog"></i>
                                 </button>
-                                <button onclick="deleteLicense(${license.id})" class="px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition text-xs" title="Xóa">
+                                <button onclick="deleteLicense(${license.id})" class="p-1 text-red-500 hover:text-red-700" title="Delete">
                                     <i class="fas fa-trash"></i>
                                 </button>
                             </div>
@@ -237,7 +310,7 @@ async function loadLicenses() {
                 tbody.innerHTML += row;
             });
             
-            // Add event listeners for checkboxes
+            // Add checkbox event listeners
             document.querySelectorAll('.license-checkbox').forEach(checkbox => {
                 checkbox.addEventListener('change', function() {
                     if (this.checked) {
@@ -249,26 +322,17 @@ async function loadLicenses() {
                 });
             });
             
-            updatePagination();
+            updateLicensePagination();
             updateLicenseCount();
-        } else {
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="7" class="px-4 py-8 text-center text-red-500">
-                        <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
-                        <p>Lỗi khi tải dữ liệu</p>
-                    </td>
-                </tr>
-            `;
         }
     } catch (error) {
-        console.error('Error loading licenses:', error);
+        console.error('Load licenses error:', error);
         const tbody = document.getElementById('licenseTableBody');
         tbody.innerHTML = `
             <tr>
-                <td colspan="7" class="px-4 py-8 text-center text-red-500">
-                    <i class="fas fa-wifi-slash text-2xl mb-2"></i>
-                    <p>Lỗi kết nối server</p>
+                <td colspan="7" class="px-6 py-8 text-center text-red-500">
+                    <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
+                    <p>Error loading licenses</p>
                 </td>
             </tr>
         `;
@@ -284,121 +348,111 @@ function updateSelectAll() {
     selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
 }
 
-function updatePagination() {
+function updateLicensePagination() {
     const totalPages = Math.ceil(totalLicenses / licensesPerPage);
-    const currentPageElement = document.getElementById('currentPage');
-    const prevButton = document.getElementById('prevPage');
-    const nextButton = document.getElementById('nextPage');
-    
-    currentPageElement.textContent = currentPage;
-    prevButton.disabled = currentPage === 1;
-    nextButton.disabled = currentPage === totalPages || totalPages === 0;
+    document.getElementById('currentLicensePage').textContent = currentLicensePage;
+    document.getElementById('prevLicenseBtn').disabled = currentLicensePage === 1;
+    document.getElementById('nextLicenseBtn').disabled = currentLicensePage === totalPages || totalPages === 0;
 }
 
-function changePage(delta) {
-    const newPage = currentPage + delta;
-    const totalPages = Math.ceil(totalLicenses / licensesPerPage);
-    
-    if (newPage >= 1 && newPage <= totalPages) {
-        currentPage = newPage;
+function updateLicenseCount() {
+    const start = (currentLicensePage - 1) * licensesPerPage + 1;
+    const end = Math.min(currentLicensePage * licensesPerPage, totalLicenses);
+    document.getElementById('licenseCount').textContent = `Showing ${start}-${end} of ${totalLicenses} licenses`;
+}
+
+function prevLicensePage() {
+    if (currentLicensePage > 1) {
+        currentLicensePage--;
         loadLicenses();
     }
 }
 
-function updateLicenseCount() {
-    const element = document.getElementById('licenseCount');
-    const start = (currentPage - 1) * licensesPerPage + 1;
-    const end = Math.min(currentPage * licensesPerPage, totalLicenses);
-    element.textContent = `Hiển thị ${start}-${end} của ${totalLicenses} license`;
+function nextLicensePage() {
+    const totalPages = Math.ceil(totalLicenses / licensesPerPage);
+    if (currentLicensePage < totalPages) {
+        currentLicensePage++;
+        loadLicenses();
+    }
 }
 
-// License actions modals
+// ============ LICENSE MODALS ============
+
+// Show create license modal
 function showCreateLicenseModal() {
     Swal.fire({
-        title: 'Tạo License mới',
+        title: 'Create License',
         html: `
-            <div class="text-left">
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Sản phẩm *</label>
-                    <input type="text" id="product" class="swal2-input" placeholder="Tên sản phẩm" required>
+            <div class="text-left space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Product Name *</label>
+                    <input type="text" id="product" class="swal2-input" placeholder="Enter product name" required>
                 </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Chủ sở hữu</label>
-                    <input type="text" id="owner" class="swal2-input" placeholder="Tên chủ sở hữu">
-                </div>
-                <div class="grid grid-cols-2 gap-4 mb-4">
+                
+                <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
                         <select id="status" class="swal2-input">
                             <option value="active">Active</option>
                             <option value="inactive">Inactive</option>
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Số ngày *</label>
-                        <input type="number" id="custom_days" class="swal2-input" value="30" min="1" required>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Days *</label>
+                        <input type="number" id="days" class="swal2-input" value="30" min="1" required>
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-4 mb-4">
+                
+                <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Max Devices</label>
-                        <input type="number" id="max_devices" class="swal2-input" value="1" min="1">
+                        <input type="number" id="maxDevices" class="swal2-input" value="1" min="1">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Auto Renew</label>
-                        <select id="auto_renew" class="swal2-input">
-                            <option value="false">Không</option>
-                            <option value="true">Có</option>
+                        <select id="autoRenew" class="swal2-input">
+                            <option value="false">No</option>
+                            <option value="true">Yes</option>
                         </select>
                     </div>
                 </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">License Key tùy chỉnh</label>
-                    <input type="text" id="custom_key" class="swal2-input" placeholder="Để trống để tự động tạo">
-                    <p class="text-xs text-gray-500 mt-1">Format: chữ hoa, số và dấu gạch ngang, 8-50 ký tự</p>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Owner (Optional)</label>
+                    <input type="text" id="owner" class="swal2-input" placeholder="License owner name">
                 </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">HWID Lock</label>
-                    <input type="text" id="hwid_lock" class="swal2-input" placeholder="HWID1,HWID2,... (để trống nếu không lock)">
-                </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">IP Lock</label>
-                    <input type="text" id="ip_lock" class="swal2-input" placeholder="IP1,IP2,... (để trống nếu không lock)">
-                </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Ghi chú</label>
-                    <textarea id="notes" class="swal2-textarea" rows="3" placeholder="Ghi chú..."></textarea>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Notes (Optional)</label>
+                    <textarea id="notes" class="swal2-textarea" rows="2" placeholder="Additional notes"></textarea>
                 </div>
             </div>
         `,
         showCancelButton: true,
-        confirmButtonText: 'Tạo License',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Create License',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#3b82f6',
         preConfirm: () => {
             const product = document.getElementById('product').value.trim();
-            const custom_days = document.getElementById('custom_days').value;
+            const days = document.getElementById('days').value;
             
             if (!product) {
-                Swal.showValidationMessage('Vui lòng nhập tên sản phẩm');
+                Swal.showValidationMessage('Product name is required');
                 return false;
             }
             
-            if (!custom_days || custom_days < 1) {
-                Swal.showValidationMessage('Số ngày phải lớn hơn 0');
+            if (!days || days < 1) {
+                Swal.showValidationMessage('Days must be at least 1');
                 return false;
             }
             
             return {
                 product: product,
-                owner: document.getElementById('owner').value.trim(),
                 status: document.getElementById('status').value,
-                custom_days: parseInt(custom_days),
-                max_devices: parseInt(document.getElementById('max_devices').value),
-                auto_renew: document.getElementById('auto_renew').value === 'true',
-                custom_key: document.getElementById('custom_key').value.trim(),
-                hwid_lock: document.getElementById('hwid_lock').value.trim(),
-                ip_lock: document.getElementById('ip_lock').value.trim(),
+                custom_days: parseInt(days),
+                max_devices: parseInt(document.getElementById('maxDevices').value),
+                auto_renew: document.getElementById('autoRenew').value === 'true',
+                owner: document.getElementById('owner').value.trim(),
                 notes: document.getElementById('notes').value.trim()
             };
         }
@@ -418,50 +472,160 @@ function showCreateLicenseModal() {
                 if (data.success) {
                     Swal.fire({
                         icon: 'success',
-                        title: 'Thành công!',
+                        title: 'Success!',
                         html: `
-                            <p>Đã tạo license thành công!</p>
+                            <p>License created successfully!</p>
                             <div class="mt-4 p-3 bg-gray-100 rounded">
-                                <p class="font-mono text-sm break-all">${data.license_key}</p>
-                                <p class="text-xs text-gray-600 mt-1">Hết hạn: ${data.expires_at}</p>
+                                <p class="font-mono text-sm">${data.license_key}</p>
+                                <p class="text-xs text-gray-600 mt-1">Expires: ${data.expires_at}</p>
                             </div>
-                            <button onclick="copyToClipboard('${data.license_key}')" class="mt-3 px-3 py-1 bg-blue-100 text-blue-700 rounded text-sm">
-                                <i class="fas fa-copy mr-1"></i> Sao chép
+                            <button onclick="copyToClipboard('${data.license_key}')" class="mt-3 px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition">
+                                <i class="fas fa-copy mr-2"></i> Copy License Key
                             </button>
                         `
                     });
                     
-                    // Reload licenses list
+                    // Reload data
                     await loadLicenses();
-                    await loadStats();
+                    await loadDashboard();
                 } else {
-                    Swal.fire('Lỗi!', data.message || 'Không thể tạo license', 'error');
+                    Swal.fire('Error!', data.message, 'error');
                 }
             } catch (error) {
                 console.error('Create license error:', error);
-                Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+                Swal.fire('Error!', 'Connection error', 'error');
             }
         }
     });
 }
 
-async function showLicenseDetails(licenseId) {
-    try {
-        // Get license details
-        const response = await fetch(`/api/admin/licenses`);
-        const result = await response.json();
-        
-        if (result.success) {
-            const license = result.data.find(l => l.id === licenseId);
-            if (!license) {
-                showToast('Không tìm thấy license', 'error');
-                return;
+// Show create custom license modal
+function showCreateCustomLicenseModal() {
+    Swal.fire({
+        title: 'Create Custom License',
+        html: `
+            <div class="text-left space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Custom License Key *</label>
+                    <input type="text" id="customKey" class="swal2-input" placeholder="CUSTOM-KEY-123" required>
+                    <p class="text-xs text-gray-500 mt-1">Uppercase letters, numbers, and hyphens only (10-50 characters)</p>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Product Name *</label>
+                    <input type="text" id="product" class="swal2-input" placeholder="Enter product name" required>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                        <select id="status" class="swal2-input">
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Days *</label>
+                        <input type="number" id="days" class="swal2-input" value="30" min="1" required>
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Owner (Optional)</label>
+                    <input type="text" id="owner" class="swal2-input" placeholder="License owner name">
+                </div>
+            </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: 'Create Custom License',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#8b5cf6',
+        preConfirm: () => {
+            const customKey = document.getElementById('customKey').value.trim().toUpperCase();
+            const product = document.getElementById('product').value.trim();
+            const days = document.getElementById('days').value;
+            
+            if (!customKey) {
+                Swal.showValidationMessage('Custom license key is required');
+                return false;
             }
             
-            // Get activations
-            const activationsRes = await fetch(`/api/admin/licenses/activations/${licenseId}`);
-            const activationsResult = await activationsRes.json();
-            const activations = activationsResult.success ? activationsResult.data : [];
+            if (!/^[A-Z0-9-]{10,50}$/.test(customKey)) {
+                Swal.showValidationMessage('Invalid license key format. Use uppercase letters, numbers, and hyphens (10-50 characters)');
+                return false;
+            }
+            
+            if (!product) {
+                Swal.showValidationMessage('Product name is required');
+                return false;
+            }
+            
+            if (!days || days < 1) {
+                Swal.showValidationMessage('Days must be at least 1');
+                return false;
+            }
+            
+            return {
+                custom_key: customKey,
+                product: product,
+                status: document.getElementById('status').value,
+                custom_days: parseInt(days),
+                owner: document.getElementById('owner').value.trim()
+            };
+        }
+    }).then(async (result) => {
+        if (result.isConfirmed) {
+            try {
+                const response = await fetch('/api/admin/licenses/create', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(result.value)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Success!',
+                        html: `
+                            <p>Custom license created successfully!</p>
+                            <div class="mt-4 p-3 bg-gray-100 rounded">
+                                <p class="font-mono text-sm">${data.license_key}</p>
+                                <p class="text-xs text-gray-600 mt-1">Expires: ${data.expires_at}</p>
+                                <p class="text-xs text-purple-600 mt-1">✓ Custom License Key</p>
+                            </div>
+                            <button onclick="copyToClipboard('${data.license_key}')" class="mt-3 px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition">
+                                <i class="fas fa-copy mr-2"></i> Copy License Key
+                            </button>
+                        `
+                    });
+                    
+                    // Reload data
+                    await loadLicenses();
+                    await loadDashboard();
+                } else {
+                    Swal.fire('Error!', data.message, 'error');
+                }
+            } catch (error) {
+                console.error('Create custom license error:', error);
+                Swal.fire('Error!', 'Connection error', 'error');
+            }
+        }
+    });
+}
+
+// Show license details
+async function showLicenseDetails(licenseId) {
+    try {
+        const response = await fetch(`/api/admin/licenses/${licenseId}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            const license = data.license;
+            const activations = data.activations;
             
             let statusColor = '';
             switch(license.status) {
@@ -471,8 +635,33 @@ async function showLicenseDetails(licenseId) {
                 case 'banned': statusColor = 'text-gray-600'; break;
             }
             
+            let activationsHtml = '';
+            if (activations.length > 0) {
+                activationsHtml = `
+                    <div class="mt-4">
+                        <p class="font-medium text-gray-700 mb-2">Activations (${activations.length}/${license.max_devices})</p>
+                        <div class="max-h-40 overflow-y-auto space-y-2">
+                            ${activations.map(act => `
+                                <div class="p-2 bg-gray-50 rounded">
+                                    <div class="flex justify-between">
+                                        <span class="font-mono text-sm">${act.hwid}</span>
+                                        <span class="text-xs ${act.is_active ? 'text-green-600' : 'text-gray-400'}">
+                                            ${act.is_active ? 'Active' : 'Inactive'}
+                                        </span>
+                                    </div>
+                                    <div class="text-xs text-gray-500">
+                                        IP: ${act.ip_address || 'N/A'} | 
+                                        Last: ${formatDate(act.last_check)}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
             Swal.fire({
-                title: 'Chi tiết License',
+                title: 'License Details',
                 html: `
                     <div class="text-left space-y-4">
                         <div class="grid grid-cols-2 gap-4">
@@ -481,41 +670,41 @@ async function showLicenseDetails(licenseId) {
                                 <p class="font-mono font-bold">${license.license_key}</p>
                             </div>
                             <div>
-                                <p class="text-sm text-gray-600">Trạng thái</p>
+                                <p class="text-sm text-gray-600">Status</p>
                                 <p class="font-bold ${statusColor}">${license.status.toUpperCase()}</p>
                             </div>
                         </div>
                         
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <p class="text-sm text-gray-600">Sản phẩm</p>
+                                <p class="text-sm text-gray-600">Product</p>
                                 <p class="font-medium">${license.product}</p>
                             </div>
                             <div>
-                                <p class="text-sm text-gray-600">Chủ sở hữu</p>
+                                <p class="text-sm text-gray-600">Owner</p>
                                 <p class="font-medium">${license.owner || '-'}</p>
                             </div>
                         </div>
                         
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <p class="text-sm text-gray-600">Ngày tạo</p>
-                                <p>${new Date(license.created_at).toLocaleString('vi-VN')}</p>
+                                <p class="text-sm text-gray-600">Created</p>
+                                <p>${formatDate(license.created_at)}</p>
                             </div>
                             <div>
-                                <p class="text-sm text-gray-600">Hết hạn</p>
-                                <p>${license.expires_at ? new Date(license.expires_at).toLocaleString('vi-VN') : 'Không hết hạn'}</p>
+                                <p class="text-sm text-gray-600">Expires</p>
+                                <p>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</p>
                             </div>
                         </div>
                         
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <p class="text-sm text-gray-600">Số ngày</p>
-                                <p>${license.custom_days} ngày (24h/ngày)</p>
-                            </div>
-                            <div>
                                 <p class="text-sm text-gray-600">Max Devices</p>
                                 <p>${license.max_devices}</p>
+                            </div>
+                            <div>
+                                <p class="text-sm text-gray-600">Total Activations</p>
+                                <p>${license.total_activations}</p>
                             </div>
                         </div>
                         
@@ -528,37 +717,17 @@ async function showLicenseDetails(licenseId) {
                         
                         ${license.notes ? `
                             <div>
-                                <p class="text-sm text-gray-600">Ghi chú</p>
+                                <p class="text-sm text-gray-600">Notes</p>
                                 <p class="text-sm whitespace-pre-wrap">${license.notes}</p>
                             </div>
                         ` : ''}
                         
-                        <div>
-                            <p class="text-sm text-gray-600 font-medium mb-2">Activations (${activations.length}/${license.max_devices})</p>
-                            ${activations.length > 0 ? `
-                                <div class="max-h-40 overflow-y-auto">
-                                    ${activations.map(act => `
-                                        <div class="mb-2 p-2 bg-gray-50 rounded">
-                                            <div class="flex justify-between text-sm">
-                                                <span class="font-mono">${act.hwid}</span>
-                                                <span class="${act.is_active ? 'text-green-600' : 'text-gray-400'}">
-                                                    ${act.is_active ? 'Active' : 'Inactive'}
-                                                </span>
-                                            </div>
-                                            <div class="text-xs text-gray-500">
-                                                IP: ${act.ip_address || 'N/A'} | 
-                                                Last: ${act.last_check ? new Date(act.last_check).toLocaleString('vi-VN') : 'N/A'}
-                                            </div>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                            ` : '<p class="text-sm text-gray-500">Chưa có activation nào</p>'}
-                        </div>
+                        ${activationsHtml}
                     </div>
                 `,
                 showCancelButton: true,
-                confirmButtonText: 'Đóng',
-                cancelButtonText: 'Hành động',
+                confirmButtonText: 'Close',
+                cancelButtonText: 'Actions',
                 confirmButtonColor: '#3b82f6',
                 showCloseButton: true,
                 width: '600px'
@@ -570,194 +739,71 @@ async function showLicenseDetails(licenseId) {
         }
     } catch (error) {
         console.error('License details error:', error);
-        showToast('Lỗi khi lấy thông tin license', 'error');
+        showToast('Error loading license details', 'error');
     }
 }
 
-async function editLicense(licenseId) {
-    try {
-        const response = await fetch(`/api/admin/licenses`);
-        const result = await response.json();
-        
-        if (result.success) {
-            const license = result.data.find(l => l.id === licenseId);
-            if (!license) {
-                showToast('Không tìm thấy license', 'error');
-                return;
-            }
-            
-            Swal.fire({
-                title: 'Chỉnh sửa License',
-                html: `
-                    <div class="text-left">
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">License Key</label>
-                            <input type="text" value="${license.license_key}" class="swal2-input" readonly>
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Sản phẩm *</label>
-                            <input type="text" id="product" class="swal2-input" value="${license.product}" required>
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Chủ sở hữu</label>
-                            <input type="text" id="owner" class="swal2-input" value="${license.owner || ''}">
-                        </div>
-                        <div class="grid grid-cols-2 gap-4 mb-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
-                                <select id="status" class="swal2-input">
-                                    <option value="active" ${license.status === 'active' ? 'selected' : ''}>Active</option>
-                                    <option value="inactive" ${license.status === 'inactive' ? 'selected' : ''}>Inactive</option>
-                                    <option value="expired" ${license.status === 'expired' ? 'selected' : ''}>Expired</option>
-                                    <option value="banned" ${license.status === 'banned' ? 'selected' : ''}>Banned</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Số ngày</label>
-                                <input type="number" id="custom_days" class="swal2-input" value="${license.custom_days}" min="1">
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-4 mb-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Max Devices</label>
-                                <input type="number" id="max_devices" class="swal2-input" value="${license.max_devices}" min="1">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Auto Renew</label>
-                                <select id="auto_renew" class="swal2-input">
-                                    <option value="false" ${!license.auto_renew ? 'selected' : ''}>Không</option>
-                                    <option value="true" ${license.auto_renew ? 'selected' : ''}>Có</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">HWID Lock</label>
-                            <input type="text" id="hwid_lock" class="swal2-input" value="${license.hwid_lock || ''}" placeholder="HWID1,HWID2,...">
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">IP Lock</label>
-                            <input type="text" id="ip_lock" class="swal2-input" value="${license.ip_lock || ''}" placeholder="IP1,IP2,...">
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Ghi chú</label>
-                            <textarea id="notes" class="swal2-textarea" rows="3">${license.notes || ''}</textarea>
-                        </div>
-                    </div>
-                `,
-                showCancelButton: true,
-                confirmButtonText: 'Cập nhật',
-                cancelButtonText: 'Hủy',
-                confirmButtonColor: '#3b82f6',
-                preConfirm: () => {
-                    const product = document.getElementById('product').value.trim();
-                    if (!product) {
-                        Swal.showValidationMessage('Vui lòng nhập tên sản phẩm');
-                        return false;
-                    }
-                    
-                    return {
-                        product: product,
-                        owner: document.getElementById('owner').value.trim(),
-                        status: document.getElementById('status').value,
-                        custom_days: parseInt(document.getElementById('custom_days').value),
-                        max_devices: parseInt(document.getElementById('max_devices').value),
-                        auto_renew: document.getElementById('auto_renew').value === 'true',
-                        hwid_lock: document.getElementById('hwid_lock').value.trim(),
-                        ip_lock: document.getElementById('ip_lock').value.trim(),
-                        notes: document.getElementById('notes').value.trim()
-                    };
-                }
-            }).then(async (result) => {
-                if (result.isConfirmed) {
-                    try {
-                        const updateRes = await fetch(`/api/admin/licenses/update/${licenseId}`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify(result.value)
-                        });
-                        
-                        const data = await updateRes.json();
-                        
-                        if (data.success) {
-                            showToast('Đã cập nhật license thành công', 'success');
-                            await loadLicenses();
-                        } else {
-                            Swal.fire('Lỗi!', data.message || 'Không thể cập nhật license', 'error');
-                        }
-                    } catch (error) {
-                        console.error('Update license error:', error);
-                        Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
-                    }
-                }
-            });
-        }
-    } catch (error) {
-        console.error('Edit license error:', error);
-        showToast('Lỗi khi lấy thông tin license', 'error');
-    }
-}
-
+// Show license actions
 function showLicenseActions(licenseId) {
     Swal.fire({
-        title: 'Hành động với License',
+        title: 'License Actions',
         html: `
             <div class="text-left space-y-3">
-                <button onclick="extendLicense(${licenseId})" class="w-full text-left p-3 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
-                    <i class="fas fa-calendar-plus text-blue-600 mr-2"></i>
-                    <span class="font-medium">Gia hạn thêm ngày</span>
-                    <p class="text-sm text-gray-600 mt-1">Thêm số ngày sử dụng cho license</p>
+                <button onclick="extendLicense(${licenseId})" class="w-full text-left p-3 bg-blue-50 hover:bg-blue-100 rounded-lg transition flex items-center">
+                    <i class="fas fa-calendar-plus text-blue-600 mr-3"></i>
+                    <div>
+                        <p class="font-medium">Extend License</p>
+                        <p class="text-sm text-gray-600">Add more days to this license</p>
+                    </div>
                 </button>
                 
-                <button onclick="resetLicense(${licenseId})" class="w-full text-left p-3 bg-yellow-50 hover:bg-yellow-100 rounded-lg transition">
-                    <i class="fas fa-redo text-yellow-600 mr-2"></i>
-                    <span class="font-medium">Reset License</span>
-                    <p class="text-sm text-gray-600 mt-1">Xóa tất cả activations, reset về trạng thái ban đầu</p>
+                <button onclick="resetLicense(${licenseId})" class="w-full text-left p-3 bg-yellow-50 hover:bg-yellow-100 rounded-lg transition flex items-center">
+                    <i class="fas fa-redo text-yellow-600 mr-3"></i>
+                    <div>
+                        <p class="font-medium">Reset License</p>
+                        <p class="text-sm text-gray-600">Clear all activations and reset counter</p>
+                    </div>
                 </button>
                 
-                <button onclick="banLicense(${licenseId})" class="w-full text-left p-3 bg-red-50 hover:bg-red-100 rounded-lg transition">
-                    <i class="fas fa-ban text-red-600 mr-2"></i>
-                    <span class="font-medium">Khóa License</span>
-                    <p class="text-sm text-gray-600 mt-1">Khóa license vĩnh viễn (ban)</p>
-                </button>
-                
-                <button onclick="showLicenseActivations(${licenseId})" class="w-full text-left p-3 bg-purple-50 hover:bg-purple-100 rounded-lg transition">
-                    <i class="fas fa-list text-purple-600 mr-2"></i>
-                    <span class="font-medium">Xem Activations</span>
-                    <p class="text-sm text-gray-600 mt-1">Xem danh sách các thiết bị đã kích hoạt</p>
+                <button onclick="banLicense(${licenseId})" class="w-full text-left p-3 bg-red-50 hover:bg-red-100 rounded-lg transition flex items-center">
+                    <i class="fas fa-ban text-red-600 mr-3"></i>
+                    <div>
+                        <p class="font-medium">Ban License</p>
+                        <p class="text-sm text-gray-600">Permanently disable this license</p>
+                    </div>
                 </button>
             </div>
         `,
         showConfirmButton: false,
         showCloseButton: true,
-        width: '500px'
+        width: '400px'
     });
 }
 
+// Extend license
 async function extendLicense(licenseId) {
     const { value: days } = await Swal.fire({
-        title: 'Gia hạn License',
+        title: 'Extend License',
         input: 'number',
-        inputLabel: 'Số ngày muốn thêm',
+        inputLabel: 'Number of days to add',
         inputValue: 30,
         inputAttributes: {
             min: 1,
             step: 1
         },
         showCancelButton: true,
-        confirmButtonText: 'Gia hạn',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Extend',
+        cancelButtonText: 'Cancel',
         inputValidator: (value) => {
             if (!value || value < 1) {
-                return 'Vui lòng nhập số ngày hợp lệ';
+                return 'Please enter a valid number of days';
             }
         }
     });
     
     if (days) {
         try {
-            const response = await fetch(`/api/admin/licenses/extend/${licenseId}`, {
+            const response = await fetch(`/api/admin/licenses/${licenseId}/extend`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -768,78 +814,75 @@ async function extendLicense(licenseId) {
             const data = await response.json();
             
             if (data.success) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Thành công!',
-                    html: `
-                        <p>Đã gia hạn license thêm ${days} ngày</p>
-                        <p class="text-sm text-gray-600 mt-2">Hết hạn mới: ${data.new_expiry}</p>
-                    `
-                });
+                showToast(`License extended by ${days} days`, 'success');
                 await loadLicenses();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể gia hạn license', 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
             console.error('Extend license error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
 
+// Reset license
 async function resetLicense(licenseId) {
-    const { value: confirm } = await Swal.fire({
+    const { isConfirmed } = await Swal.fire({
         title: 'Reset License?',
-        text: 'Tất cả activations sẽ bị xóa. License sẽ được reset về trạng thái ban đầu.',
+        text: 'This will clear all device activations and reset the activation counter.',
         icon: 'warning',
         showCancelButton: true,
-        confirmButtonText: 'Reset',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Yes, reset it',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#f59e0b',
         reverseButtons: true
     });
     
-    if (confirm) {
+    if (isConfirmed) {
         try {
-            const response = await fetch(`/api/admin/licenses/reset/${licenseId}`, {
+            const response = await fetch(`/api/admin/licenses/${licenseId}/reset`, {
                 method: 'POST'
             });
             
             const data = await response.json();
             
             if (data.success) {
-                showToast('Đã reset license thành công', 'success');
+                showToast('License reset successfully', 'success');
                 await loadLicenses();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể reset license', 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
             console.error('Reset license error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
 
+// Ban license
 async function banLicense(licenseId) {
     const { value: reason } = await Swal.fire({
-        title: 'Khóa License',
+        title: 'Ban License',
         input: 'text',
-        inputLabel: 'Lý do khóa',
-        inputPlaceholder: 'Nhập lý do khóa license...',
+        inputLabel: 'Reason for banning',
+        inputPlaceholder: 'Enter reason...',
         showCancelButton: true,
-        confirmButtonText: 'Khóa',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Ban License',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#ef4444',
         inputValidator: (value) => {
             if (!value) {
-                return 'Vui lòng nhập lý do khóa';
+                return 'Please enter a reason';
             }
         }
     });
     
     if (reason) {
         try {
-            const response = await fetch(`/api/admin/licenses/ban/${licenseId}`, {
+            const response = await fetch(`/api/admin/licenses/${licenseId}/ban`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -850,103 +893,50 @@ async function banLicense(licenseId) {
             const data = await response.json();
             
             if (data.success) {
-                showToast('Đã khóa license thành công', 'success');
+                showToast('License banned successfully', 'success');
                 await loadLicenses();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể khóa license', 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
             console.error('Ban license error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
 
-async function showLicenseActivations(licenseId) {
-    try {
-        const response = await fetch(`/api/admin/licenses/activations/${licenseId}`);
-        const result = await response.json();
-        
-        if (result.success) {
-            const activations = result.data;
-            
-            if (activations.length === 0) {
-                Swal.fire({
-                    icon: 'info',
-                    title: 'Chưa có activation',
-                    text: 'License này chưa được kích hoạt trên thiết bị nào.'
-                });
-                return;
-            }
-            
-            let activationsHtml = '<div class="max-h-60 overflow-y-auto">';
-            activations.forEach(act => {
-                activationsHtml += `
-                    <div class="mb-3 p-3 bg-gray-50 rounded-lg">
-                        <div class="flex justify-between items-start">
-                            <div>
-                                <p class="font-mono text-sm font-medium">${act.hwid}</p>
-                                <p class="text-xs text-gray-600 mt-1">
-                                    IP: ${act.ip_address || 'N/A'} | 
-                                    Device: ${act.device_name || 'N/A'}
-                                </p>
-                                <p class="text-xs text-gray-500">
-                                    Activated: ${new Date(act.activated_at).toLocaleString('vi-VN')}
-                                </p>
-                            </div>
-                            <span class="px-2 py-1 text-xs rounded-full ${act.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
-                                ${act.is_active ? 'Active' : 'Inactive'}
-                            </span>
-                        </div>
-                    </div>
-                `;
-            });
-            activationsHtml += '</div>';
-            
-            Swal.fire({
-                title: 'Danh sách Activations',
-                html: activationsHtml,
-                showConfirmButton: false,
-                showCloseButton: true,
-                width: '600px'
-            });
-        }
-    } catch (error) {
-        console.error('Activations error:', error);
-        showToast('Lỗi khi lấy danh sách activations', 'error');
-    }
-}
-
+// Delete license
 async function deleteLicense(licenseId) {
-    const { value: confirm } = await Swal.fire({
-        title: 'Xóa License?',
-        text: 'Hành động này không thể hoàn tác. License và tất cả activations sẽ bị xóa vĩnh viễn.',
+    const { isConfirmed } = await Swal.fire({
+        title: 'Delete License?',
+        text: 'This action cannot be undone. All activations will be deleted.',
         icon: 'warning',
         showCancelButton: true,
-        confirmButtonText: 'Xóa',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Yes, delete it',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#ef4444',
         reverseButtons: true
     });
     
-    if (confirm) {
+    if (isConfirmed) {
         try {
-            const response = await fetch(`/api/admin/licenses/delete/${licenseId}`, {
-                method: 'POST'
+            const response = await fetch(`/api/admin/licenses/${licenseId}`, {
+                method: 'DELETE'
             });
             
             const data = await response.json();
             
             if (data.success) {
-                showToast('Đã xóa license thành công', 'success');
+                showToast('License deleted successfully', 'success');
                 await loadLicenses();
-                await loadStats();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể xóa license', 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
             console.error('Delete license error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
@@ -954,65 +944,65 @@ async function deleteLicense(licenseId) {
 // Bulk actions
 function showBulkActions() {
     if (selectedLicenses.size === 0) {
-        showToast('Vui lòng chọn ít nhất một license', 'warning');
+        showToast('Please select at least one license', 'warning');
         return;
     }
     
     Swal.fire({
-        title: 'Hành động hàng loạt',
+        title: 'Bulk Actions',
         html: `
             <div class="text-left space-y-3">
                 <button onclick="bulkAction('activate')" class="w-full text-left p-3 bg-green-50 hover:bg-green-100 rounded-lg transition">
                     <i class="fas fa-play text-green-600 mr-2"></i>
-                    <span class="font-medium">Kích hoạt</span>
-                    <p class="text-sm text-gray-600 mt-1">Kích hoạt ${selectedLicenses.size} license đã chọn</p>
+                    <span class="font-medium">Activate</span>
+                    <p class="text-sm text-gray-600 mt-1">Activate ${selectedLicenses.size} selected licenses</p>
                 </button>
                 
                 <button onclick="bulkAction('deactivate')" class="w-full text-left p-3 bg-yellow-50 hover:bg-yellow-100 rounded-lg transition">
                     <i class="fas fa-pause text-yellow-600 mr-2"></i>
-                    <span class="font-medium">Vô hiệu hóa</span>
-                    <p class="text-sm text-gray-600 mt-1">Vô hiệu hóa ${selectedLicenses.size} license đã chọn</p>
+                    <span class="font-medium">Deactivate</span>
+                    <p class="text-sm text-gray-600 mt-1">Deactivate ${selectedLicenses.size} selected licenses</p>
                 </button>
                 
-                <button onclick="bulkAction('ban')" class="w-full text-left p-3 bg-red-50 hover:bg-red-100 rounded-lg transition">
-                    <i class="fas fa-ban text-red-600 mr-2"></i>
-                    <span class="font-medium">Khóa</span>
-                    <p class="text-sm text-gray-600 mt-1">Khóa ${selectedLicenses.size} license đã chọn</p>
+                <button onclick="bulkAction('reset')" class="w-full text-left p-3 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
+                    <i class="fas fa-redo text-blue-600 mr-2"></i>
+                    <span class="font-medium">Reset</span>
+                    <p class="text-sm text-gray-600 mt-1">Reset ${selectedLicenses.size} selected licenses</p>
                 </button>
                 
-                <button onclick="bulkAction('delete')" class="w-full text-left p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition border border-red-200">
+                <button onclick="bulkAction('delete')" class="w-full text-left p-3 bg-red-50 hover:bg-red-100 rounded-lg transition border border-red-200">
                     <i class="fas fa-trash text-red-600 mr-2"></i>
-                    <span class="font-medium text-red-600">Xóa vĩnh viễn</span>
-                    <p class="text-sm text-gray-600 mt-1">Xóa ${selectedLicenses.size} license đã chọn</p>
+                    <span class="font-medium text-red-600">Delete</span>
+                    <p class="text-sm text-gray-600 mt-1">Delete ${selectedLicenses.size} selected licenses</p>
                 </button>
             </div>
         `,
         showConfirmButton: false,
         showCloseButton: true,
-        width: '500px'
+        width: '400px'
     });
 }
 
 async function bulkAction(action) {
     const actionNames = {
-        'activate': 'kích hoạt',
-        'deactivate': 'vô hiệu hóa',
-        'ban': 'khóa',
-        'delete': 'xóa'
+        'activate': 'activate',
+        'deactivate': 'deactivate',
+        'reset': 'reset',
+        'delete': 'delete'
     };
     
-    const { value: confirm } = await Swal.fire({
-        title: `Xác nhận ${actionNames[action]}`,
-        text: `Bạn có chắc chắn muốn ${actionNames[action]} ${selectedLicenses.size} license đã chọn?`,
+    const { isConfirmed } = await Swal.fire({
+        title: `Confirm ${actionNames[action]}`,
+        text: `Are you sure you want to ${actionNames[action]} ${selectedLicenses.size} licenses?`,
         icon: action === 'delete' ? 'warning' : 'question',
         showCancelButton: true,
-        confirmButtonText: action === 'delete' ? 'Xóa vĩnh viễn' : `Đồng ý ${actionNames[action]}`,
-        cancelButtonText: 'Hủy',
+        confirmButtonText: action === 'delete' ? 'Delete Permanently' : `Yes, ${actionNames[action]}`,
+        cancelButtonText: 'Cancel',
         confirmButtonColor: action === 'delete' ? '#ef4444' : '#3b82f6',
         reverseButtons: true
     });
     
-    if (confirm) {
+    if (isConfirmed) {
         try {
             const response = await fetch('/api/admin/licenses/bulk', {
                 method: 'POST',
@@ -1037,151 +1027,91 @@ async function bulkAction(action) {
                 
                 // Reload data
                 await loadLicenses();
-                await loadStats();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || `Không thể ${actionNames[action]} license`, 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
             console.error('Bulk action error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            showToast('Connection error', 'error');
         }
     }
 }
 
-// API Key management
-async function showCreateApiKeyModal() {
-    const { value: name } = await Swal.fire({
-        title: 'Tạo API Key mới',
-        input: 'text',
-        inputLabel: 'Tên API Key',
-        inputPlaceholder: 'Nhập tên cho API Key này...',
-        showCancelButton: true,
-        confirmButtonText: 'Tạo',
-        cancelButtonText: 'Hủy',
-        confirmButtonColor: '#10b981',
-        inputValidator: (value) => {
-            if (!value) {
-                return 'Vui lòng nhập tên API Key';
-            }
-        }
-    });
-    
-    if (name) {
-        try {
-            const response = await fetch('/api/admin/apikeys/create', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ name: name })
-            });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Thành công!',
-                    html: `
-                        <p>Đã tạo API Key thành công!</p>
-                        <div class="mt-4 p-3 bg-gray-100 rounded">
-                            <p class="font-mono text-sm break-all">${data.api_key}</p>
-                            <p class="text-xs text-gray-600 mt-2">⚠️ Lưu lại ngay vì sẽ không hiển thị lại lần sau!</p>
-                        </div>
-                        <button onclick="copyToClipboard('${data.api_key}')" class="mt-3 px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition">
-                            <i class="fas fa-copy mr-2"></i> Sao chép API Key
-                        </button>
-                    `,
-                    width: '600px'
-                });
-                
-                // Load API keys list
-                await loadApiKeys();
-                await loadStats();
-            } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể tạo API Key', 'error');
-            }
-        } catch (error) {
-            console.error('Create API key error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
-        }
-    }
-}
+// ============ SERVER KEY FUNCTIONS ============
 
-async function loadApiKeys() {
+// Load server keys
+async function loadServerKeys() {
     try {
-        const container = document.getElementById('apiKeysList');
+        const container = document.getElementById('serverKeysList');
         container.innerHTML = `
-            <div class="col-span-3 py-8 text-center text-gray-500">
+            <div class="col-span-3 text-center py-8">
                 <div class="flex justify-center">
                     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
                 </div>
-                <p class="mt-2">Đang tải API Keys...</p>
+                <p class="mt-2 text-gray-500">Loading server keys...</p>
             </div>
         `;
         
-        const response = await fetch('/api/admin/apikeys');
-        const result = await response.json();
+        const response = await fetch('/api/admin/server-keys');
+        const data = await response.json();
         
-        if (result.success) {
-            const apikeys = result.data;
+        if (data.success) {
             container.innerHTML = '';
             
-            if (apikeys.length === 0) {
+            if (data.data.length === 0) {
                 container.innerHTML = `
-                    <div class="col-span-3 py-8 text-center text-gray-500">
+                    <div class="col-span-3 text-center py-8">
                         <i class="fas fa-key text-4xl mb-2 text-gray-300"></i>
-                        <p>Chưa có API Key nào</p>
-                        <button onclick="showCreateApiKeyModal()" class="mt-4 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
-                            <i class="fas fa-plus mr-2"></i> Tạo API Key đầu tiên
+                        <p class="text-gray-500">No server keys yet</p>
+                        <button onclick="showCreateServerKeyModal()" class="mt-4 px-4 py-2 btn-success rounded-lg">
+                            <i class="fas fa-plus mr-2"></i> Create Server Key
                         </button>
                     </div>
                 `;
                 return;
             }
             
-            apikeys.forEach(key => {
-                const isActive = key.status === 'active';
-                const lastUsed = key.last_used ? new Date(key.last_used).toLocaleString('vi-VN') : 'Chưa sử dụng';
-                
+            data.data.forEach(key => {
                 const card = `
-                    <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-                        <div class="p-4">
-                            <div class="flex justify-between items-start mb-3">
-                                <div>
-                                    <h4 class="font-bold text-gray-800">${key.name}</h4>
-                                    <div class="flex items-center mt-1">
-                                        <div class="w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-red-500'} mr-2"></div>
-                                        <span class="text-xs ${isActive ? 'text-green-600' : 'text-red-600'}">${isActive ? 'Active' : 'Inactive'}</span>
-                                    </div>
-                                </div>
-                                <div class="flex space-x-1">
-                                    <button onclick="updateApiKey(${key.id})" class="p-1 text-blue-500 hover:text-blue-700" title="Sửa">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
-                                    <button onclick="deleteApiKey(${key.id})" class="p-1 text-red-500 hover:text-red-700" title="Xóa">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
+                    <div class="card p-4">
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <h4 class="font-bold text-gray-800">${key.key_name}</h4>
+                                <div class="flex items-center mt-1">
+                                    <div class="w-2 h-2 rounded-full ${key.status === 'active' ? 'bg-green-500' : 'bg-red-500'} mr-2"></div>
+                                    <span class="text-xs ${key.status === 'active' ? 'text-green-600' : 'text-red-600'}">
+                                        ${key.status === 'active' ? 'Active' : 'Inactive'}
+                                    </span>
                                 </div>
                             </div>
+                            <button onclick="deleteServerKey(${key.id})" class="text-red-500 hover:text-red-700">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <div class="flex items-center space-x-2">
+                                <code class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-800 font-mono text-xs break-all">
+                                    ${key.server_key}
+                                </code>
+                                <button onclick="copyToClipboard('${key.server_key}')" class="px-2 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
                             
-                            <div class="mt-4">
-                                <div class="flex items-center space-x-2">
-                                    <code class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-800 font-mono text-xs break-all">${key.key}</code>
-                                    <button onclick="copyToClipboard('${key.key}')" class="px-2 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition" title="Sao chép">
-                                        <i class="fas fa-copy"></i>
-                                    </button>
+                            <div class="mt-4 text-xs text-gray-500 space-y-1">
+                                <div class="flex justify-between">
+                                    <span><i class="far fa-calendar mr-1"></i> Created:</span>
+                                    <span>${formatDate(key.created_at)}</span>
                                 </div>
-                                
-                                <div class="mt-4 text-xs text-gray-500 space-y-1">
-                                    <div class="flex justify-between">
-                                        <span><i class="far fa-calendar mr-1"></i> Ngày tạo:</span>
-                                        <span>${new Date(key.created_at).toLocaleDateString('vi-VN')}</span>
-                                    </div>
-                                    <div class="flex justify-between">
-                                        <span><i class="far fa-clock mr-1"></i> Lần cuối:</span>
-                                        <span>${lastUsed}</span>
-                                    </div>
+                                <div class="flex justify-between">
+                                    <span><i class="far fa-clock mr-1"></i> Last Used:</span>
+                                    <span>${formatDate(key.last_used)}</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span><i class="fas fa-user-shield mr-1"></i> Permissions:</span>
+                                    <span>${key.permissions}</span>
                                 </div>
                             </div>
                         </div>
@@ -1191,124 +1121,300 @@ async function loadApiKeys() {
             });
         }
     } catch (error) {
-        console.error('Error loading API keys:', error);
-        const container = document.getElementById('apiKeysList');
+        console.error('Load server keys error:', error);
+        const container = document.getElementById('serverKeysList');
         container.innerHTML = `
-            <div class="col-span-3 py-8 text-center text-red-500">
+            <div class="col-span-3 text-center py-8 text-red-500">
                 <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
-                <p>Lỗi khi tải API Keys</p>
+                <p>Error loading server keys</p>
             </div>
         `;
     }
 }
 
-async function updateApiKey(keyId) {
-    try {
-        const response = await fetch('/api/admin/apikeys');
-        const result = await response.json();
-        
-        if (result.success) {
-            const apikey = result.data.find(k => k.id === keyId);
-            if (!apikey) {
-                showToast('Không tìm thấy API Key', 'error');
-                return;
-            }
-            
-            const { value: formValues } = await Swal.fire({
-                title: 'Chỉnh sửa API Key',
-                html: `
-                    <div class="text-left">
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Tên API Key</label>
-                            <input type="text" id="name" class="swal2-input" value="${apikey.name}" required>
-                        </div>
-                        <div class="mb-4">
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
-                            <select id="status" class="swal2-input">
-                                <option value="active" ${apikey.status === 'active' ? 'selected' : ''}>Active</option>
-                                <option value="inactive" ${apikey.status === 'inactive' ? 'selected' : ''}>Inactive</option>
-                            </select>
-                        </div>
-                    </div>
-                `,
-                showCancelButton: true,
-                confirmButtonText: 'Cập nhật',
-                cancelButtonText: 'Hủy',
-                confirmButtonColor: '#3b82f6',
-                preConfirm: () => {
-                    const name = document.getElementById('name').value.trim();
-                    if (!name) {
-                        Swal.showValidationMessage('Vui lòng nhập tên API Key');
-                        return false;
-                    }
-                    return {
-                        name: name,
-                        status: document.getElementById('status').value
-                    };
-                }
-            });
-            
-            if (formValues) {
-                const updateRes = await fetch(`/api/admin/apikeys/update/${keyId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(formValues)
-                });
-                
-                const data = await updateRes.json();
-                
-                if (data.success) {
-                    showToast('Đã cập nhật API Key thành công', 'success');
-                    await loadApiKeys();
-                } else {
-                    Swal.fire('Lỗi!', data.message || 'Không thể cập nhật API Key', 'error');
-                }
+// Create server key
+async function showCreateServerKeyModal() {
+    const { value: keyName } = await Swal.fire({
+        title: 'Create Server Key',
+        input: 'text',
+        inputLabel: 'Key Name',
+        inputPlaceholder: 'Enter a name for this key...',
+        showCancelButton: true,
+        confirmButtonText: 'Create Key',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#10b981',
+        inputValidator: (value) => {
+            if (!value) {
+                return 'Please enter a key name';
             }
         }
-    } catch (error) {
-        console.error('Update API key error:', error);
-        showToast('Lỗi khi cập nhật API Key', 'error');
+    });
+    
+    if (keyName) {
+        try {
+            const response = await fetch('/api/admin/server-keys/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ key_name: keyName })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Success!',
+                    html: `
+                        <p>Server key created successfully!</p>
+                        <div class="mt-4 p-3 bg-gray-100 rounded">
+                            <p class="font-mono text-sm break-all">${data.server_key}</p>
+                            <p class="text-xs text-gray-600 mt-2">⚠️ Save this key - it won't be shown again!</p>
+                        </div>
+                        <button onclick="copyToClipboard('${data.server_key}')" class="mt-3 px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition">
+                            <i class="fas fa-copy mr-2"></i> Copy Server Key
+                        </button>
+                    `,
+                    width: '600px'
+                });
+                
+                // Reload server keys
+                await loadServerKeys();
+                await loadDashboard();
+            } else {
+                Swal.fire('Error!', data.message, 'error');
+            }
+        } catch (error) {
+            console.error('Create server key error:', error);
+            Swal.fire('Error!', 'Connection error', 'error');
+        }
     }
 }
 
-async function deleteApiKey(keyId) {
-    const { value: confirm } = await Swal.fire({
-        title: 'Xóa API Key?',
-        text: 'API Key sẽ bị xóa vĩnh viễn. Các ứng dụng đang sử dụng API Key này sẽ không thể verify license nữa.',
+// Delete server key
+async function deleteServerKey(keyId) {
+    const { isConfirmed } = await Swal.fire({
+        title: 'Delete Server Key?',
+        text: 'Applications using this key will no longer be able to access the server API.',
         icon: 'warning',
         showCancelButton: true,
-        confirmButtonText: 'Xóa',
-        cancelButtonText: 'Hủy',
+        confirmButtonText: 'Delete',
+        cancelButtonText: 'Cancel',
         confirmButtonColor: '#ef4444',
         reverseButtons: true
     });
     
-    if (confirm) {
+    if (isConfirmed) {
         try {
-            const response = await fetch(`/api/admin/apikeys/delete/${keyId}`, {
+            const response = await fetch(`/api/admin/server-keys/${keyId}/delete`, {
                 method: 'POST'
             });
             
             const data = await response.json();
             
             if (data.success) {
-                showToast('Đã xóa API Key thành công', 'success');
-                await loadApiKeys();
-                await loadStats();
+                showToast('Server key deleted', 'success');
+                await loadServerKeys();
+                await loadDashboard();
             } else {
-                Swal.fire('Lỗi!', data.message || 'Không thể xóa API Key', 'error');
+                showToast(data.message, 'error');
             }
         } catch (error) {
-            console.error('Delete API key error:', error);
-            Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
+            console.error('Delete server key error:', error);
+            showToast('Connection error', 'error');
         }
     }
 }
 
-// Activity logs
-async function loadActivity() {
+// ============ API KEY FUNCTIONS ============
+
+// Load API keys
+async function loadApiKeys() {
+    try {
+        const container = document.getElementById('apiKeysList');
+        container.innerHTML = `
+            <div class="col-span-3 text-center py-8">
+                <div class="flex justify-center">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
+                </div>
+                <p class="mt-2 text-gray-500">Loading API keys...</p>
+            </div>
+        `;
+        
+        const response = await fetch('/api/admin/api-keys');
+        const data = await response.json();
+        
+        if (data.success) {
+            container.innerHTML = '';
+            
+            if (data.data.length === 0) {
+                container.innerHTML = `
+                    <div class="col-span-3 text-center py-8">
+                        <i class="fas fa-code text-4xl mb-2 text-gray-300"></i>
+                        <p class="text-gray-500">No API keys yet</p>
+                        <button onclick="showCreateApiKeyModal()" class="mt-4 px-4 py-2 btn-success rounded-lg">
+                            <i class="fas fa-plus mr-2"></i> Create API Key
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+            
+            data.data.forEach(key => {
+                const card = `
+                    <div class="card p-4">
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <h4 class="font-bold text-gray-800">${key.key_name}</h4>
+                                <div class="flex items-center mt-1">
+                                    <div class="w-2 h-2 rounded-full ${key.status === 'active' ? 'bg-green-500' : 'bg-red-500'} mr-2"></div>
+                                    <span class="text-xs ${key.status === 'active' ? 'text-green-600' : 'text-red-600'}">
+                                        ${key.status === 'active' ? 'Active' : 'Inactive'}
+                                    </span>
+                                </div>
+                            </div>
+                            <button onclick="deleteApiKey(${key.id})" class="text-red-500 hover:text-red-700">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <div class="flex items-center space-x-2">
+                                <code class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-800 font-mono text-xs break-all">
+                                    ${key.api_key}
+                                </code>
+                                <button onclick="copyToClipboard('${key.api_key}')" class="px-2 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                            
+                            <div class="mt-4 text-xs text-gray-500 space-y-1">
+                                <div class="flex justify-between">
+                                    <span><i class="far fa-calendar mr-1"></i> Created:</span>
+                                    <span>${formatDate(key.created_at)}</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span><i class="far fa-clock mr-1"></i> Last Used:</span>
+                                    <span>${formatDate(key.last_used)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += card;
+            });
+        }
+    } catch (error) {
+        console.error('Load API keys error:', error);
+        const container = document.getElementById('apiKeysList');
+        container.innerHTML = `
+            <div class="col-span-3 text-center py-8 text-red-500">
+                <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
+                <p>Error loading API keys</p>
+            </div>
+        `;
+    }
+}
+
+// Create API key
+async function showCreateApiKeyModal() {
+    const { value: keyName } = await Swal.fire({
+        title: 'Create API Key',
+        input: 'text',
+        inputLabel: 'Key Name',
+        inputPlaceholder: 'Enter a name for this key...',
+        showCancelButton: true,
+        confirmButtonText: 'Create Key',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#10b981',
+        inputValidator: (value) => {
+            if (!value) {
+                return 'Please enter a key name';
+            }
+        }
+    });
+    
+    if (keyName) {
+        try {
+            const response = await fetch('/api/admin/api-keys/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ key_name: keyName })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Success!',
+                    html: `
+                        <p>API key created successfully!</p>
+                        <div class="mt-4 p-3 bg-gray-100 rounded">
+                            <p class="font-mono text-sm break-all">${data.api_key}</p>
+                            <p class="text-xs text-gray-600 mt-2">⚠️ Save this key - it won't be shown again!</p>
+                        </div>
+                        <button onclick="copyToClipboard('${data.api_key}')" class="mt-3 px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition">
+                            <i class="fas fa-copy mr-2"></i> Copy API Key
+                        </button>
+                    `,
+                    width: '600px'
+                });
+                
+                // Reload API keys
+                await loadApiKeys();
+                await loadDashboard();
+            } else {
+                Swal.fire('Error!', data.message, 'error');
+            }
+        } catch (error) {
+            console.error('Create API key error:', error);
+            Swal.fire('Error!', 'Connection error', 'error');
+        }
+    }
+}
+
+// Delete API key
+async function deleteApiKey(keyId) {
+    const { isConfirmed } = await Swal.fire({
+        title: 'Delete API Key?',
+        text: 'Applications using this key will no longer be able to verify licenses.',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Delete',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#ef4444',
+        reverseButtons: true
+    });
+    
+    if (isConfirmed) {
+        try {
+            const response = await fetch(`/api/admin/api-keys/${keyId}/delete`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                showToast('API key deleted', 'success');
+                await loadApiKeys();
+                await loadDashboard();
+            } else {
+                showToast(data.message, 'error');
+            }
+        } catch (error) {
+            console.error('Delete API key error:', error);
+            showToast('Connection error', 'error');
+        }
+    }
+}
+
+// ============ ACTIVITY LOGS ============
+
+async function loadActivityLogs() {
     try {
         const container = document.getElementById('activityList');
         container.innerHTML = `
@@ -1316,58 +1422,37 @@ async function loadActivity() {
                 <div class="flex justify-center">
                     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
                 </div>
-                <p class="mt-2">Đang tải hoạt động...</p>
+                <p class="mt-2">Loading activity logs...</p>
             </div>
         `;
         
-        const response = await fetch('/api/admin/activity');
-        const result = await response.json();
+        const response = await fetch('/api/admin/activity?limit=50');
+        const data = await response.json();
         
-        if (result.success) {
-            const activities = result.data;
+        if (data.success) {
             container.innerHTML = '';
             
-            if (activities.length === 0) {
-                container.innerHTML = `
-                    <div class="text-center text-gray-500 py-8">
-                        <i class="fas fa-history text-4xl mb-2 text-gray-300"></i>
-                        <p>Chưa có hoạt động nào</p>
-                    </div>
-                `;
+            if (data.data.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center py-8">No activity yet</p>';
                 return;
             }
             
-            activities.forEach(activity => {
-                let icon = 'fa-info-circle';
-                let color = 'text-blue-500';
-                
-                switch(activity.action) {
-                    case 'LOGIN': icon = 'fa-sign-in-alt'; color = 'text-green-500'; break;
-                    case 'LOGOUT': icon = 'fa-sign-out-alt'; color = 'text-gray-500'; break;
-                    case 'CREATE_LICENSE': icon = 'fa-plus-circle'; color = 'text-green-500'; break;
-                    case 'DELETE_LICENSE': icon = 'fa-trash-alt'; color = 'text-red-500'; break;
-                    case 'BAN_LICENSE': icon = 'fa-ban'; color = 'text-red-500'; break;
-                    case 'RESET_LICENSE': icon = 'fa-redo'; color = 'text-yellow-500'; break;
-                    case 'EXTEND_LICENSE': icon = 'fa-calendar-plus'; color = 'text-blue-500'; break;
-                    case 'CHANGE_PASSWORD': icon = 'fa-key'; color = 'text-purple-500'; break;
-                }
-                
-                const details = activity.details ? 
-                    `<p class="text-xs text-gray-600 mt-1">${JSON.stringify(activity.details)}</p>` : '';
+            data.data.forEach(log => {
+                const icon = getActivityIcon(log.action);
+                const color = getActivityColor(log.action);
                 
                 const item = `
-                    <div class="bg-white p-4 rounded-lg shadow-sm border-l-4 ${color}">
-                        <div class="flex justify-between items-start">
-                            <div class="flex items-start space-x-3">
-                                <i class="fas ${icon} ${color} text-lg mt-1"></i>
-                                <div>
-                                    <p class="font-medium">${activity.action.replace(/_/g, ' ')}</p>
-                                    <p class="text-sm text-gray-500">
-                                        bởi ${activity.username} • ${new Date(activity.created_at).toLocaleString('vi-VN')}
-                                    </p>
-                                    ${details}
-                                </div>
+                    <div class="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg">
+                        <div class="${color} w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0">
+                            <i class="${icon} text-white text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex justify-between">
+                                <p class="font-medium text-gray-800">${formatAction(log.action)}</p>
+                                <span class="text-xs text-gray-500">${formatDate(log.created_at)}</span>
                             </div>
+                            <p class="text-sm text-gray-600">by ${log.username}</p>
+                            ${log.details ? `<p class="text-xs text-gray-500 mt-1">${JSON.stringify(log.details)}</p>` : ''}
                         </div>
                     </div>
                 `;
@@ -1375,117 +1460,50 @@ async function loadActivity() {
             });
         }
     } catch (error) {
-        console.error('Error loading activity:', error);
+        console.error('Activity logs error:', error);
         const container = document.getElementById('activityList');
         container.innerHTML = `
             <div class="text-center text-red-500 py-8">
                 <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
-                <p>Lỗi khi tải hoạt động</p>
+                <p>Error loading activity logs</p>
             </div>
         `;
     }
 }
 
-// Change password
-function showChangePasswordModal() {
-    Swal.fire({
-        title: 'Đổi mật khẩu',
-        html: `
-            <div class="text-left">
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Mật khẩu hiện tại</label>
-                    <input type="password" id="current_password" class="swal2-input" required>
-                </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Mật khẩu mới</label>
-                    <input type="password" id="new_password" class="swal2-input" required>
-                    <p class="text-xs text-gray-500 mt-1">Ít nhất 6 ký tự</p>
-                </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Xác nhận mật khẩu mới</label>
-                    <input type="password" id="confirm_password" class="swal2-input" required>
-                </div>
-            </div>
-        `,
-        showCancelButton: true,
-        confirmButtonText: 'Đổi mật khẩu',
-        cancelButtonText: 'Hủy',
-        confirmButtonColor: '#3b82f6',
-        preConfirm: () => {
-            const current = document.getElementById('current_password').value;
-            const newPass = document.getElementById('new_password').value;
-            const confirm = document.getElementById('confirm_password').value;
-            
-            if (!current || !newPass || !confirm) {
-                Swal.showValidationMessage('Vui lòng nhập đầy đủ thông tin');
-                return false;
-            }
-            
-            if (newPass.length < 6) {
-                Swal.showValidationMessage('Mật khẩu mới phải có ít nhất 6 ký tự');
-                return false;
-            }
-            
-            if (newPass !== confirm) {
-                Swal.showValidationMessage('Mật khẩu mới không khớp');
-                return false;
-            }
-            
-            return {
-                current_password: current,
-                new_password: newPass,
-                confirm_password: confirm
-            };
-        }
-    }).then(async (result) => {
-        if (result.isConfirmed) {
-            try {
-                const response = await fetch('/api/admin/change-password', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(result.value)
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Thành công!',
-                        text: data.message,
-                        timer: 2000,
-                        showConfirmButton: false
-                    });
-                } else {
-                    Swal.fire('Lỗi!', data.message || 'Không thể đổi mật khẩu', 'error');
-                }
-            } catch (error) {
-                console.error('Change password error:', error);
-                Swal.fire('Lỗi!', 'Lỗi kết nối đến server', 'error');
-            }
-        }
-    });
-}
+// ============ UTILITY FUNCTIONS ============
 
-// Utility functions
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        showToast('Đã sao chép vào clipboard!', 'success');
-    }).catch(err => {
-        console.error('Copy failed:', err);
-        showToast('Không thể sao chép', 'error');
-    });
-}
-
-// Initialize
-document.addEventListener('DOMContentLoaded', function() {
-    // Set current username
-    const username = 'Admin';
-    document.getElementById('usernameDisplay').textContent = username;
-    document.getElementById('currentUser').textContent = username;
+function refreshAllData() {
+    const currentTab = document.querySelector('.tab-active').getAttribute('onclick').match(/switchTab\('([^']+)'\)/)[1];
     
-    // Auto refresh
-    setInterval(loadStats, 30000);
+    if (currentTab === 'dashboard') {
+        loadDashboard();
+    } else if (currentTab === 'licenses') {
+        loadLicenses();
+    } else if (currentTab === 'server-keys') {
+        loadServerKeys();
+    } else if (currentTab === 'api-keys') {
+        loadApiKeys();
+    } else if (currentTab === 'activity') {
+        loadActivityLogs();
+    }
+    
+    showToast('Data refreshed', 'success');
+}
+
+function exportLicenses() {
+    alert('Export feature coming soon!');
+}
+
+// Select all licenses
+document.getElementById('selectAll').addEventListener('change', function(e) {
+    const checkboxes = document.querySelectorAll('.license-checkbox');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = e.target.checked;
+        if (e.target.checked) {
+            selectedLicenses.add(checkbox.value);
+        } else {
+            selectedLicenses.delete(checkbox.value);
+        }
+    });
 });
