@@ -1,53 +1,143 @@
-from flask import Flask, render_template, jsonify, request, make_response
+"""
+Admin Panel - Server Key & API Manager
+Phiên bản tối giản, code sạch, ít lỗi
+"""
+
+from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
-from functools import wraps
 import os
-from datetime import datetime, timedelta
 import secrets
 import jwt
-from config import Config
-from database import get_db, init_database, check_db_connection
-from auth import login_required, generate_token, verify_token
-import json
+from datetime import datetime, timedelta
+from functools import wraps
+import hashlib
 
+# ==================== INITIALIZATION ====================
 app = Flask(__name__, static_folder='.')
-app.config.from_object(Config)
-CORS(app)
+CORS(app, supports_credentials=True)
 
-# ==================== Routes ====================
+# Configuration
+app.config.update(
+    SECRET_KEY=os.environ.get('SECRET_KEY', 'dev-key-change-in-production'),
+    ADMIN_USERNAME=os.environ.get('ADMIN_USERNAME', 'admin'),
+    ADMIN_PASSWORD_HASH=os.environ.get('ADMIN_PASSWORD_HASH', 
+        hashlib.sha256('admin123'.encode()).hexdigest()),  # Default hash of 'admin123'
+    JWT_SECRET=os.environ.get('JWT_SECRET', 'jwt-secret-change-me'),
+    JWT_EXPIRES_HOURS=24
+)
+
+# In-memory storage (for demo - replace with database in production)
+keys_storage = []
+activity_logs = []
+next_id = 1
+
+# ==================== AUTHENTICATION ====================
+def generate_token(username):
+    """Generate JWT token"""
+    payload = {
+        'username': username,
+        'role': 'admin',
+        'exp': datetime.utcnow() + timedelta(hours=app.config['JWT_EXPIRES_HOURS']),
+        'iat': datetime.utcnow()
+    }
+    return jwt.encode(payload, app.config['JWT_SECRET'], algorithm='HS256')
+
+def verify_token(token):
+    """Verify JWT token"""
+    try:
+        payload = jwt.decode(token, app.config['JWT_SECRET'], algorithms=['HS256'])
+        return payload
+    except:
+        return None
+
+def login_required(f):
+    """Decorator for protected routes"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+        
+        # Get token from cookie
+        if not token:
+            token = request.cookies.get('token')
+        
+        if not token:
+            return jsonify({'success': False, 'error': 'Token required'}), 401
+        
+        payload = verify_token(token)
+        if not payload:
+            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+        
+        request.user = payload
+        return f(*args, **kwargs)
+    
+    return decorated
+
+# ==================== KEY MANAGEMENT FUNCTIONS ====================
+def generate_server_key():
+    """Generate secure server key"""
+    return f"sk_{secrets.token_hex(24)}"
+
+def generate_api_key():
+    """Generate secure API key"""
+    return f"api_{secrets.token_hex(32)}"
+
+def log_activity(action, details, key_id=None):
+    """Log admin activity"""
+    activity_logs.append({
+        'id': len(activity_logs) + 1,
+        'key_id': key_id,
+        'action': action,
+        'details': details,
+        'timestamp': datetime.now().isoformat(),
+        'ip': request.remote_addr
+    })
+    # Keep only last 100 logs
+    if len(activity_logs) > 100:
+        activity_logs.pop(0)
+
+# ==================== ROUTES ====================
 
 @app.route('/')
 def index():
-    """Render admin panel - KHÔNG yêu cầu login ở trang chủ"""
+    """Serve admin panel"""
     return render_template('admin.html')
 
-@app.route('/login', methods=['POST'])
+# ========== AUTH ROUTES ==========
+
+@app.route('/api/login', methods=['POST'])
 def login():
-    """Đăng nhập"""
+    """Admin login"""
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'success': False, 'error': 'Invalid JSON'}), 400
-            
+            return jsonify({'success': False, 'error': 'Invalid request'}), 400
+        
         username = data.get('username')
         password = data.get('password')
         
         if not username or not password:
-            return jsonify({'success': False, 'error': 'Username và password là bắt buộc'}), 400
+            return jsonify({'success': False, 'error': 'Missing credentials'}), 400
         
-        # Kiểm tra thông tin đăng nhập
+        # Verify credentials
         if username != app.config['ADMIN_USERNAME']:
-            return jsonify({'success': False, 'error': 'Sai thông tin đăng nhập'}), 401
+            return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
         
-        if password != app.config['ADMIN_PASSWORD']:
-            return jsonify({'success': False, 'error': 'Sai thông tin đăng nhập'}), 401
+        # Hash the provided password and compare
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != app.config['ADMIN_PASSWORD_HASH']:
+            return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
         
-        # Tạo token
+        # Generate token
         token = generate_token(username)
         
         response = jsonify({
             'success': True,
-            'message': 'Đăng nhập thành công',
+            'message': 'Login successful',
             'token': token,
             'user': {'username': username}
         })
@@ -57,523 +147,292 @@ def login():
             'token',
             token,
             httponly=True,
-            secure=app.config.get('ENVIRONMENT') == 'production',
+            secure=os.environ.get('FLASK_ENV') == 'production',
             samesite='Strict',
-            max_age=24*60*60  # 24 giờ
+            max_age=86400  # 24 hours
         )
         
+        log_activity('LOGIN', f'User {username} logged in')
         return response
         
     except Exception as e:
-        print(f"Login error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Server error'}), 500
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """Admin logout"""
+    response = jsonify({'success': True, 'message': 'Logged out'})
+    response.delete_cookie('token')
+    log_activity('LOGOUT', 'User logged out')
+    return response
 
 @app.route('/api/verify', methods=['GET'])
 @login_required
 def verify():
-    """Xác thực token"""
+    """Verify token"""
     return jsonify({
         'success': True,
-        'data': {
-            'user': request.user,
-            'valid': True
-        }
+        'user': request.user
     })
+
+# ========== KEY MANAGEMENT ROUTES ==========
 
 @app.route('/api/keys', methods=['GET'])
 @login_required
 def get_keys():
-    """Lấy danh sách tất cả keys"""
+    """Get all keys with optional filtering"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({
-                'success': False, 
-                'error': 'Database không khả dụng',
-                'data': []
-            })
+        status_filter = request.args.get('status')
+        search_query = request.args.get('search', '').lower()
         
-        cursor = conn.cursor()
+        filtered_keys = keys_storage.copy()
         
-        # Lấy tham số filter
-        status = request.args.get('status')
-        search = request.args.get('search', '')
+        # Apply status filter
+        if status_filter:
+            filtered_keys = [k for k in filtered_keys if k['status'] == status_filter]
         
-        query = """
-            SELECT id, key_name, server_key, api_key, status, notes, 
-                   created_at, updated_at, last_reset_at
-            FROM api_keys 
-            WHERE 1=1
-        """
-        params = []
+        # Apply search filter
+        if search_query:
+            filtered_keys = [
+                k for k in filtered_keys
+                if search_query in k['key_name'].lower() or 
+                   search_query in k['server_key'].lower() or
+                   search_query in k['api_key'].lower()
+            ]
         
-        if status:
-            query += " AND status = %s"
-            params.append(status)
+        # Sort by creation date (newest first)
+        filtered_keys.sort(key=lambda x: x['created_at'], reverse=True)
         
-        if search:
-            query += " AND (key_name ILIKE %s OR server_key ILIKE %s OR api_key ILIKE %s)"
-            search_term = f"%{search}%"
-            params.extend([search_term, search_term, search_term])
-        
-        query += " ORDER BY created_at DESC"
-        
-        cursor.execute(query, params)
-        keys = cursor.fetchall()
-        
-        # Chuyển đổi sang dict
-        keys_list = []
-        for key in keys:
-            keys_list.append({
-                'id': key[0],
-                'key_name': key[1],
-                'server_key': key[2],
-                'api_key': key[3],
-                'status': key[4],
-                'notes': key[5],
-                'created_at': key[6].isoformat() if key[6] else None,
-                'updated_at': key[7].isoformat() if key[7] else None,
-                'last_reset_at': key[8].isoformat() if key[8] else None
-            })
-        
-        # Đếm thống kê
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total,
-                COUNT(CASE WHEN status = 'active' THEN 1 END) as active,
-                COUNT(CASE WHEN status = 'locked' THEN 1 END) as locked
-            FROM api_keys
-        """)
-        stats = cursor.fetchone()
-        
-        cursor.close()
+        # Calculate statistics
+        total = len(keys_storage)
+        active = sum(1 for k in keys_storage if k['status'] == 'active')
+        locked = total - active
         
         return jsonify({
             'success': True,
-            'data': keys_list,
-            'stats': {
-                'total': stats[0] if stats else 0,
-                'active': stats[1] if stats else 0,
-                'locked': stats[2] if stats else 0
-            }
+            'data': filtered_keys,
+            'stats': {'total': total, 'active': active, 'locked': locked}
         })
         
     except Exception as e:
-        print(f"Get keys error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error', 'data': []}), 500
+        return jsonify({'success': False, 'error': 'Failed to get keys'}), 500
 
 @app.route('/api/keys', methods=['POST'])
 @login_required
 def create_key():
-    """Tạo key mới"""
+    """Create new server key and API key"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
-        
         data = request.get_json()
         if not data:
-            return jsonify({'success': False, 'error': 'Invalid JSON'}), 400
-            
-        key_name = data.get('key_name')
-        notes = data.get('notes', '')
+            return jsonify({'success': False, 'error': 'Invalid request'}), 400
+        
+        key_name = data.get('key_name', '').strip()
+        notes = data.get('notes', '').strip()
         
         if not key_name:
-            return jsonify({'success': False, 'error': 'Tên key là bắt buộc'}), 400
+            return jsonify({'success': False, 'error': 'Key name is required'}), 400
         
-        # Tạo keys ngẫu nhiên
-        server_key = f"sk_{secrets.token_hex(24)}"
-        api_key = f"api_{secrets.token_hex(32)}"
+        global next_id
         
-        cursor = conn.cursor()
+        # Generate new keys
+        new_key = {
+            'id': next_id,
+            'key_name': key_name,
+            'server_key': generate_server_key(),
+            'api_key': generate_api_key(),
+            'status': 'active',
+            'notes': notes,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'last_reset_at': None
+        }
         
-        cursor.execute("""
-            INSERT INTO api_keys (key_name, server_key, api_key, notes)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, key_name, server_key, api_key, status, notes, created_at
-        """, (key_name, server_key, api_key, notes))
+        keys_storage.append(new_key)
+        next_id += 1
         
-        new_key = cursor.fetchone()
-        
-        # Ghi log
-        cursor.execute("""
-            INSERT INTO activity_logs (key_id, action, details)
-            VALUES (%s, %s, %s)
-        """, (new_key[0], 'CREATE', f'Tạo key mới: {key_name}'))
-        
-        conn.commit()
-        cursor.close()
+        log_activity('CREATE', f'Created key: {key_name}', new_key['id'])
         
         return jsonify({
             'success': True,
-            'message': 'Key đã được tạo thành công',
-            'data': {
-                'id': new_key[0],
-                'key_name': new_key[1],
-                'server_key': new_key[2],
-                'api_key': new_key[3],
-                'status': new_key[4],
-                'notes': new_key[5],
-                'created_at': new_key[6].isoformat() if new_key[6] else None
-            }
+            'message': 'Key created successfully',
+            'data': new_key
         }), 201
         
     except Exception as e:
-        print(f"Create key error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Failed to create key'}), 500
 
 @app.route('/api/keys/<int:key_id>/reset', methods=['PUT'])
 @login_required
 def reset_key(key_id):
     """Reset API key"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
-        
-        cursor = conn.cursor()
-        
-        # Kiểm tra key tồn tại
-        cursor.execute("SELECT id, key_name FROM api_keys WHERE id = %s", (key_id,))
-        key = cursor.fetchone()
-        
+        key = next((k for k in keys_storage if k['id'] == key_id), None)
         if not key:
-            cursor.close()
-            return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
+            return jsonify({'success': False, 'error': 'Key not found'}), 404
         
-        # Tạo API key mới
-        new_api_key = f"api_{secrets.token_hex(32)}"
+        # Generate new API key
+        key['api_key'] = generate_api_key()
+        key['last_reset_at'] = datetime.now().isoformat()
+        key['updated_at'] = datetime.now().isoformat()
         
-        cursor.execute("""
-            UPDATE api_keys 
-            SET api_key = %s, last_reset_at = NOW(), updated_at = NOW()
-            WHERE id = %s
-            RETURNING id, key_name, server_key, api_key, last_reset_at
-        """, (new_api_key, key_id))
-        
-        updated_key = cursor.fetchone()
-        
-        # Ghi log
-        cursor.execute("""
-            INSERT INTO activity_logs (key_id, action, details)
-            VALUES (%s, %s, %s)
-        """, (key_id, 'RESET', f'Reset API key: {key[1]}'))
-        
-        conn.commit()
-        cursor.close()
+        log_activity('RESET', f'Reset API key for: {key["key_name"]}', key_id)
         
         return jsonify({
             'success': True,
-            'message': 'Key đã được reset thành công',
+            'message': 'API key reset successfully',
             'data': {
-                'id': updated_key[0],
-                'key_name': updated_key[1],
-                'server_key': updated_key[2],
-                'api_key': updated_key[3],
-                'last_reset_at': updated_key[4].isoformat() if updated_key[4] else None
+                'id': key['id'],
+                'key_name': key['key_name'],
+                'api_key': key['api_key'],
+                'last_reset_at': key['last_reset_at']
             }
         })
         
     except Exception as e:
-        print(f"Reset key error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Failed to reset key'}), 500
 
 @app.route('/api/keys/<int:key_id>/lock', methods=['PUT'])
 @login_required
-def toggle_lock(key_id):
-    """Lock/Unlock key"""
+def toggle_lock_key(key_id):
+    """Lock or unlock a key"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
-        
-        cursor = conn.cursor()
-        
-        # Kiểm tra key tồn tại
-        cursor.execute("SELECT id, key_name, status FROM api_keys WHERE id = %s", (key_id,))
-        key = cursor.fetchone()
-        
+        key = next((k for k in keys_storage if k['id'] == key_id), None)
         if not key:
-            cursor.close()
-            return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
+            return jsonify({'success': False, 'error': 'Key not found'}), 404
         
-        # Chuyển đổi trạng thái
-        new_status = 'locked' if key[2] == 'active' else 'active'
+        # Toggle status
+        new_status = 'locked' if key['status'] == 'active' else 'active'
+        key['status'] = new_status
+        key['updated_at'] = datetime.now().isoformat()
         
-        cursor.execute("""
-            UPDATE api_keys 
-            SET status = %s, updated_at = NOW()
-            WHERE id = %s
-            RETURNING id, key_name, status
-        """, (new_status, key_id))
-        
-        updated_key = cursor.fetchone()
-        
-        # Ghi log
-        action = 'LOCK' if new_status == 'locked' else 'UNLOCK'
-        cursor.execute("""
-            INSERT INTO activity_logs (key_id, action, details)
-            VALUES (%s, %s, %s)
-        """, (key_id, action, f'{action} key: {key[1]}'))
-        
-        conn.commit()
-        cursor.close()
+        action = 'LOCKED' if new_status == 'locked' else 'UNLOCKED'
+        log_activity(action, f'{action} key: {key["key_name"]}', key_id)
         
         return jsonify({
             'success': True,
-            'message': f'Key đã được {new_status} thành công',
+            'message': f'Key {new_status} successfully',
             'data': {
-                'id': updated_key[0],
-                'key_name': updated_key[1],
-                'status': updated_key[2]
+                'id': key['id'],
+                'key_name': key['key_name'],
+                'status': key['status']
             }
         })
         
     except Exception as e:
-        print(f"Toggle lock error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Failed to update key'}), 500
 
 @app.route('/api/keys/<int:key_id>', methods=['DELETE'])
 @login_required
 def delete_key(key_id):
-    """Xóa key"""
+    """Delete a key"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
-        
-        cursor = conn.cursor()
-        
-        # Kiểm tra key tồn tại
-        cursor.execute("SELECT id, key_name FROM api_keys WHERE id = %s", (key_id,))
-        key = cursor.fetchone()
-        
+        key = next((k for k in keys_storage if k['id'] == key_id), None)
         if not key:
-            cursor.close()
-            return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
+            return jsonify({'success': False, 'error': 'Key not found'}), 404
         
-        # Lưu thông tin trước khi xóa
-        key_name = key[1]
+        # Remove key
+        keys_storage[:] = [k for k in keys_storage if k['id'] != key_id]
         
-        # Xóa key
-        cursor.execute("DELETE FROM api_keys WHERE id = %s RETURNING id", (key_id,))
-        deleted_id = cursor.fetchone()
-        
-        if not deleted_id:
-            conn.rollback()
-            cursor.close()
-            return jsonify({'success': False, 'error': 'Xóa key thất bại'}), 500
-        
-        # Ghi log
-        cursor.execute("""
-            INSERT INTO activity_logs (key_id, action, details)
-            VALUES (%s, %s, %s)
-        """, (None, 'DELETE', f'Xóa key: {key_name} (ID: {key_id})'))
-        
-        conn.commit()
-        cursor.close()
+        log_activity('DELETE', f'Deleted key: {key["key_name"]}', key_id)
         
         return jsonify({
             'success': True,
-            'message': 'Key đã được xóa thành công',
-            'data': {'id': key_id, 'key_name': key_name}
+            'message': 'Key deleted successfully',
+            'data': {'id': key_id, 'key_name': key['key_name']}
         })
         
     except Exception as e:
-        print(f"Delete key error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Failed to delete key'}), 500
+
+# ========== ACTIVITY & STATS ROUTES ==========
 
 @app.route('/api/activity', methods=['GET'])
 @login_required
 def get_activity():
-    """Lấy lịch sử hoạt động"""
+    """Get activity logs"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({
-                'success': True,
-                'data': []
-            })
-        
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT al.id, al.key_id, al.action, al.details, al.performed_at, ak.key_name 
-            FROM activity_logs al
-            LEFT JOIN api_keys ak ON al.key_id = ak.id
-            ORDER BY al.performed_at DESC
-            LIMIT 50
-        """)
-        
-        activities = cursor.fetchall()
-        
-        activity_list = []
-        for activity in activities:
-            activity_list.append({
-                'id': activity[0],
-                'key_id': activity[1],
-                'action': activity[2],
-                'details': activity[3],
-                'performed_at': activity[4].isoformat() if activity[4] else None,
-                'key_name': activity[5]
-            })
-        
-        cursor.close()
-        
         return jsonify({
             'success': True,
-            'data': activity_list
+            'data': activity_logs[-50:]  # Last 50 activities
         })
-        
-    except Exception as e:
-        print(f"Get activity error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error', 'data': []}), 500
+    except:
+        return jsonify({'success': True, 'data': []})
 
 @app.route('/api/stats', methods=['GET'])
 @login_required
 def get_stats():
-    """Lấy thống kê"""
+    """Get system statistics"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({
-                'success': True,
-                'data': {
-                    'total_keys': 0,
-                    'active_keys': 0,
-                    'locked_keys': 0,
-                    'total_resets': 0,
-                    'recent_activity': 0
-                }
-            })
-        
-        cursor = conn.cursor()
-        
-        # Thống kê cơ bản
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_keys,
-                COUNT(CASE WHEN status = 'active' THEN 1 END) as active_keys,
-                COUNT(CASE WHEN status = 'locked' THEN 1 END) as locked_keys,
-                COALESCE(COUNT(last_reset_at), 0) as total_resets
-            FROM api_keys
-        """)
-        
-        stats = cursor.fetchone()
-        
-        # Hoạt động gần đây
-        cursor.execute("""
-            SELECT COUNT(*) as recent_activity
-            FROM activity_logs 
-            WHERE performed_at > NOW() - INTERVAL '24 hours'
-        """)
-        
-        recent = cursor.fetchone()
-        
-        cursor.close()
+        total = len(keys_storage)
+        active = sum(1 for k in keys_storage if k['status'] == 'active')
+        locked = total - active
+        recent_activity = len([a for a in activity_logs 
+                              if datetime.fromisoformat(a['timestamp']) > 
+                              datetime.now() - timedelta(hours=24)])
         
         return jsonify({
             'success': True,
             'data': {
-                'total_keys': stats[0] or 0,
-                'active_keys': stats[1] or 0,
-                'locked_keys': stats[2] or 0,
-                'total_resets': stats[3] or 0,
-                'recent_activity': recent[0] or 0
+                'total_keys': total,
+                'active_keys': active,
+                'locked_keys': locked,
+                'recent_activity': recent_activity
             }
         })
-        
-    except Exception as e:
-        print(f"Get stats error: {str(e)}")
+    except:
         return jsonify({
             'success': True,
-            'data': {
-                'total_keys': 0,
-                'active_keys': 0,
-                'locked_keys': 0,
-                'total_resets': 0,
-                'recent_activity': 0
-            }
+            'data': {'total_keys': 0, 'active_keys': 0, 'locked_keys': 0, 'recent_activity': 0}
         })
+
+# ========== PUBLIC VALIDATION ROUTE ==========
 
 @app.route('/api/validate', methods=['GET'])
 def validate_key():
-    """Kiểm tra key hợp lệ (public endpoint)"""
+    """Public endpoint to validate a key"""
     try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        key_value = request.args.get('key')
+        if not key_value:
+            return jsonify({'success': False, 'error': 'Key parameter required'}), 400
         
-        key = request.args.get('key')
+        # Find key by server_key or api_key
+        key = next((k for k in keys_storage 
+                   if k['server_key'] == key_value or k['api_key'] == key_value), None)
         
         if not key:
-            return jsonify({'success': False, 'error': 'Thiếu tham số key'}), 400
+            return jsonify({'success': False, 'error': 'Invalid key'}), 404
         
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT key_name, status, created_at, last_reset_at
-            FROM api_keys 
-            WHERE server_key = %s OR api_key = %s
-        """, (key, key))
-        
-        key_data = cursor.fetchone()
-        cursor.close()
-        
-        if not key_data:
-            return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
-        
-        if key_data[1] != 'active':
+        if key['status'] != 'active':
             return jsonify({
                 'success': False, 
-                'error': f'Key đã bị {key_data[1]}'
+                'error': f'Key is {key["status"]}'
             }), 403
         
         return jsonify({
             'success': True,
             'data': {
-                'key_name': key_data[0],
-                'status': key_data[1],
-                'created_at': key_data[2].isoformat() if key_data[2] else None,
-                'last_reset_at': key_data[3].isoformat() if key_data[3] else None
+                'key_name': key['key_name'],
+                'status': key['status'],
+                'created_at': key['created_at']
             }
         })
         
-    except Exception as e:
-        print(f"Validate key error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    except:
+        return jsonify({'success': False, 'error': 'Validation failed'}), 500
 
-# ==================== Health Check ====================
+# ========== HEALTH CHECK ==========
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    try:
-        db_status, db_message = check_db_connection()
-        
-        return jsonify({
-            'status': 'healthy',
-            'timestamp': datetime.now().isoformat(),
-            'database': {
-                'connected': db_status,
-                'message': db_message
-            },
-            'service': 'Admin Panel API',
-            'version': '1.0.1',
-            'endpoints': {
-                'api': 'available',
-                'frontend': 'available'
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'status': 'degraded',
-            'timestamp': datetime.now().isoformat(),
-            'error': str(e),
-            'service': 'Admin Panel API'
-        }), 500
+    """Health check endpoint for Render"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'Admin Panel API',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.0.0'
+    })
 
-# ==================== Static Files ====================
+# ========== STATIC FILES ==========
 
 @app.route('/style.css')
 def serve_css():
@@ -583,54 +442,81 @@ def serve_css():
 def serve_js():
     return app.send_static_file('script.js')
 
-# ==================== Error Handlers ====================
+# ========== ERROR HANDLERS ==========
 
 @app.errorhandler(404)
-def not_found(error):
+def not_found(e):
     return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
 
 @app.errorhandler(500)
-def internal_error(error):
+def internal_error(e):
     return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
-# ==================== Application Startup ====================
+# ========== INITIALIZE SAMPLE DATA ==========
 
-def initialize_app():
-    """Khởi tạo ứng dụng sau khi startup"""
-    print("🚀 Đang khởi động Admin Panel...")
-    print(f"📁 Environment: {app.config.get('ENVIRONMENT', 'development')}")
+def initialize_sample_data():
+    """Initialize with sample data for demo"""
+    global next_id, keys_storage, activity_logs
     
-    # Khởi tạo database (non-blocking)
-    try:
-        init_database()
-        print("✅ Database initialized successfully")
-    except Exception as e:
-        print(f"⚠️  Database initialization warning: {e}")
-        print("Ứng dụng vẫn sẽ chạy nhưng có thể có giới hạn chức năng")
+    if not keys_storage:
+        sample_keys = [
+            {
+                'id': 1,
+                'key_name': 'Production Server',
+                'server_key': 'sk_prod_' + secrets.token_hex(20),
+                'api_key': 'api_prod_' + secrets.token_hex(28),
+                'status': 'active',
+                'notes': 'Main production server',
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'last_reset_at': None
+            },
+            {
+                'id': 2,
+                'key_name': 'Staging Environment',
+                'server_key': 'sk_stage_' + secrets.token_hex(20),
+                'api_key': 'api_stage_' + secrets.token_hex(28),
+                'status': 'active',
+                'notes': 'Testing and staging',
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'last_reset_at': None
+            },
+            {
+                'id': 3,
+                'key_name': 'Development',
+                'server_key': 'sk_dev_' + secrets.token_hex(20),
+                'api_key': 'api_dev_' + secrets.token_hex(28),
+                'status': 'locked',
+                'notes': 'Development server (currently locked)',
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat(),
+                'last_reset_at': None
+            }
+        ]
+        
+        keys_storage.extend(sample_keys)
+        next_id = 4
+        
+        # Add sample activity logs
+        log_activity('SYSTEM', 'System initialized with sample data')
+        log_activity('CREATE', 'Created key: Production Server', 1)
+        log_activity('CREATE', 'Created key: Staging Environment', 2)
+        log_activity('CREATE', 'Created key: Development', 3)
+        log_activity('LOCK', 'Locked key: Development', 3)
 
-# ==================== Run App ====================
+# ========== START APPLICATION ==========
 
 if __name__ == '__main__':
-    # Khởi tạo ứng dụng
-    initialize_app()
+    # Initialize sample data
+    initialize_sample_data()
     
+    # Get port from environment or default
     port = int(os.environ.get('PORT', 5000))
-    print(f"🌐 Server sẽ chạy trên port: {port}")
     
-    # Chỉ chạy debug mode trong development
-    debug_mode = os.environ.get('FLASK_ENV') != 'production'
+    # Run app
+    print(f"🚀 Admin Panel starting on port {port}")
+    print(f"🔐 Admin login: {app.config['ADMIN_USERNAME']}")
+    print(f"📊 Sample keys initialized: {len(keys_storage)}")
     
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
-else:
-    # Khi chạy với gunicorn, khởi tạo sau khi import
-    import threading
-    import time
-    
-    def delayed_init():
-        """Khởi tạo database sau 2 giây để đảm bảo app đã sẵn sàng"""
-        time.sleep(2)
-        initialize_app()
-    
-    # Chạy initialization trong thread riêng
-    init_thread = threading.Thread(target=delayed_init, daemon=True)
-    init_thread.start()
+    app.run(host='0.0.0.0', port=port, debug=os.environ.get('FLASK_ENV') != 'production')
