@@ -303,7 +303,7 @@ def setup_system():
     
     elif action == 'reset_admin':
         # Reset admin password
-        password_hash = argon2_hasher.hash("admin123")
+        password_hash = argon2_hasher.hash("Anhhuykute123")
         cursor.execute(
             "INSERT OR REPLACE INTO admin_users (username, password_hash) VALUES (?, ?)",
             ("admin", password_hash)
