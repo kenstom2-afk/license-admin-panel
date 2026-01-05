@@ -1,29 +1,44 @@
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg import sql
 from config import Config
 import os
 
-def get_db_connection():
+_connection = None
+
+def get_db():
     """Kết nối đến PostgreSQL database"""
-    try:
-        conn = psycopg2.connect(
-            Config.DATABASE_URL,
-            cursor_factory=RealDictCursor
-        )
-        return conn
-    except Exception as e:
-        print(f"❌ Lỗi kết nối database: {e}")
-        raise
+    global _connection
+    
+    if _connection is None or _connection.closed:
+        try:
+            # Parse DATABASE_URL
+            db_url = Config.DATABASE_URL
+            
+            if not db_url:
+                raise ValueError("DATABASE_URL không được cấu hình")
+            
+            # Kết nối với psycopg3
+            _connection = psycopg.connect(
+                db_url,
+                autocommit=False
+            )
+            print("✅ Đã kết nối đến PostgreSQL database")
+            
+        except Exception as e:
+            print(f"❌ Lỗi kết nối database: {e}")
+            raise
+    
+    return _connection
 
 def init_database():
     """Khởi tạo database tables"""
     conn = None
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db()
+        cursor = conn.cursor()
         
         # Tạo bảng api_keys
-        cur.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id SERIAL PRIMARY KEY,
                 key_name VARCHAR(255) NOT NULL,
@@ -38,7 +53,7 @@ def init_database():
         """)
         
         # Tạo bảng activity_logs
-        cur.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS activity_logs (
                 id SERIAL PRIMARY KEY,
                 key_id INTEGER,
@@ -50,14 +65,19 @@ def init_database():
         """)
         
         # Tạo indexes
-        cur.execute("""
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_api_keys_status 
             ON api_keys(status)
         """)
         
-        cur.execute("""
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_api_keys_created 
             ON api_keys(created_at DESC)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_logs_key_id 
+            ON activity_logs(key_id)
         """)
         
         conn.commit()
@@ -68,6 +88,12 @@ def init_database():
         if conn:
             conn.rollback()
     finally:
-        if conn:
-            cur.close()
-            conn.close()
+        if cursor:
+            cursor.close()
+
+def close_db():
+    """Đóng kết nối database"""
+    global _connection
+    if _connection and not _connection.closed:
+        _connection.close()
+        print("Database connection closed")
