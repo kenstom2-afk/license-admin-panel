@@ -1,522 +1,648 @@
-"""
-Admin Panel - Server Key & API Manager
-Phiên bản tối giản, code sạch, ít lỗi
-"""
-
-from flask import Flask, render_template, jsonify, request
-from flask_cors import CORS
 import os
-import secrets
-import jwt
-from datetime import datetime, timedelta
-from functools import wraps
+import sqlite3
+import json
+import uuid
 import hashlib
+from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, g, send_file
+from flask_cors import CORS
+from cryptography.fernet import Fernet
+import base64
+import argon2
 
-# ==================== INITIALIZATION ====================
-app = Flask(__name__, static_folder='.')
-CORS(app, supports_credentials=True)
+app = Flask(__name__, static_folder='.', static_url_path='')
+CORS(app)
 
-# Configuration
-app.config.update(
-    SECRET_KEY=os.environ.get('SECRET_KEY', 'dev-key-change-in-production'),
-    ADMIN_USERNAME=os.environ.get('ADMIN_USERNAME', 'admin'),
-    ADMIN_PASSWORD_HASH=os.environ.get('ADMIN_PASSWORD_HASH', 
-        hashlib.sha256('admin123'.encode()).hexdigest()),  # Default hash of 'admin123'
-    JWT_SECRET=os.environ.get('JWT_SECRET', 'jwt-secret-change-me'),
-    JWT_EXPIRES_HOURS=24
-)
+# IMPORTANT: Use environment variable or default for Render
+app.secret_key = os.environ.get('SECRET_KEY', 'your-super-secret-key-change-this-in-production-12345')
 
-# In-memory storage (for demo - replace with database in production)
-keys_storage = []
-activity_logs = []
-next_id = 1
+# Cấu hình database
+DATABASE = 'licenses.db'
 
-# ==================== AUTHENTICATION ====================
-def generate_token(username):
-    """Generate JWT token"""
-    payload = {
-        'username': username,
-        'role': 'admin',
-        'exp': datetime.utcnow() + timedelta(hours=app.config['JWT_EXPIRES_HOURS']),
-        'iat': datetime.utcnow()
-    }
-    return jwt.encode(payload, app.config['JWT_SECRET'], algorithm='HS256')
+# Khởi tạo Argon2
+argon2_hasher = argon2.PasswordHasher()
 
-def verify_token(token):
-    """Verify JWT token"""
-    try:
-        payload = jwt.decode(token, app.config['JWT_SECRET'], algorithms=['HS256'])
-        return payload
-    except:
-        return None
+# ============== DATABASE FUNCTIONS ==============
+def get_db():
+    db = getattr(g, '_database', None)
+    if db is None:
+        db = g._database = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
+    return db
 
-def login_required(f):
-    """Decorator for protected routes"""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
+@app.teardown_appcontext
+def close_connection(exception):
+    db = getattr(g, '_database', None)
+    if db is not None:
+        db.close()
+
+def init_db():
+    with app.app_context():
+        db = get_db()
+        cursor = db.cursor()
         
-        # Get token from Authorization header
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
+        # Tạo bảng licenses
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS licenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key TEXT UNIQUE NOT NULL,
+                hwid TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                last_check TIMESTAMP,
+                device_info TEXT,
+                note TEXT,
+                is_locked INTEGER DEFAULT 0,
+                lock_reason TEXT
+            )
+        ''')
         
-        # Get token from cookie
-        if not token:
-            token = request.cookies.get('token')
+        # Tạo bảng admin_users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         
-        if not token:
-            return jsonify({'success': False, 'error': 'Token required'}), 401
+        # Tạo bảng api_keys
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                permissions TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         
-        payload = verify_token(token)
-        if not payload:
-            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+        # Thêm admin mặc định nếu chưa có
+        cursor.execute("SELECT COUNT(*) as count FROM admin_users")
+        if cursor.fetchone()[0] == 0:
+            password_hash = argon2_hasher.hash("admin123")
+            cursor.execute(
+                "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+                ("admin", password_hash)
+            )
+            print("✅ Default admin user created: admin / admin123")
         
-        request.user = payload
-        return f(*args, **kwargs)
+        # ĐẢM BẢO LUÔN CÓ ÍT NHẤT 1 API KEY
+        cursor.execute("SELECT COUNT(*) as count FROM api_keys")
+        if cursor.fetchone()[0] == 0:
+            default_api_key = f"sk_{uuid.uuid4().hex[:32]}"
+            cursor.execute(
+                "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+                (default_api_key, "Default API Key", "all")
+            )
+            print(f"✅ Default API Key created: {default_api_key[:12]}...")
+        
+        db.commit()
+        print("✅ Database initialized successfully!")
+
+# ============== HELPER FUNCTIONS ==============
+def validate_api_key():
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return False
     
-    return decorated
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM api_keys WHERE key = ?", (api_key,))
+    return cursor.fetchone() is not None
 
-# ==================== KEY MANAGEMENT FUNCTIONS ====================
-def generate_server_key():
-    """Generate secure server key"""
-    return f"sk_{secrets.token_hex(24)}"
+def generate_license_key():
+    return f"LIC-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}"
 
-def generate_api_key():
-    """Generate secure API key"""
-    return f"api_{secrets.token_hex(32)}"
-
-def log_activity(action, details, key_id=None):
-    """Log admin activity"""
-    activity_logs.append({
-        'id': len(activity_logs) + 1,
-        'key_id': key_id,
-        'action': action,
-        'details': details,
-        'timestamp': datetime.now().isoformat(),
-        'ip': request.remote_addr
-    })
-    # Keep only last 100 logs
-    if len(activity_logs) > 100:
-        activity_logs.pop(0)
-
-# ==================== ROUTES ====================
-
+# ============== ROUTES ==============
 @app.route('/')
 def index():
-    """Serve admin panel"""
-    return render_template('admin.html')
-
-# ========== AUTH ROUTES ==========
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    """Admin login"""
+    """Trả về file admin.html"""
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'error': 'Invalid request'}), 400
-        
-        username = data.get('username')
-        password = data.get('password')
-        
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Missing credentials'}), 400
-        
-        # Verify credentials
-        if username != app.config['ADMIN_USERNAME']:
-            return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
-        
-        # Hash the provided password and compare
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        if password_hash != app.config['ADMIN_PASSWORD_HASH']:
-            return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
-        
-        # Generate token
-        token = generate_token(username)
-        
-        response = jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'token': token,
-            'user': {'username': username}
-        })
-        
-        # Set HTTP-only cookie
-        response.set_cookie(
-            'token',
-            token,
-            httponly=True,
-            secure=os.environ.get('FLASK_ENV') == 'production',
-            samesite='Strict',
-            max_age=86400  # 24 hours
+        return send_file('admin.html')
+    except:
+        # Fallback nếu không có file
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>License Admin</title>
+            <style>
+                body { font-family: Arial; padding: 20px; background: #0f172a; color: white; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+                .card { background: #1e293b; padding: 20px; border-radius: 10px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>📋 License Admin Panel</h1>
+                <div class="card">
+                    <p>System is running! API endpoints are active.</p>
+                    <p><a href="/api/admin/debug" target="_blank" style="color: #4cc9f0;">Check System Status</a></p>
+                    <p><button class="btn" onclick="window.location.reload()">Reload Page</button></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+
+@app.route('/admin')
+def admin():
+    return index()
+
+# ============== DEBUG & SETUP ENDPOINTS ==============
+@app.route('/api/admin/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to check system status"""
+    db = get_db()
+    cursor = db.cursor()
+    
+    # Check tables
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row['name'] for row in cursor.fetchall()]
+    
+    # Count records
+    admin_count = cursor.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
+    api_key_count = cursor.execute("SELECT COUNT(*) FROM api_keys").fetchone()[0]
+    license_count = cursor.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+    
+    # Get first API key (masked)
+    cursor.execute("SELECT key, name FROM api_keys LIMIT 1")
+    api_key_row = cursor.fetchone()
+    api_key_info = None
+    if api_key_row:
+        api_key_info = {
+            'name': api_key_row['name'],
+            'key_masked': api_key_row['key'][:8] + '...' + api_key_row['key'][-4:]
+        }
+    
+    return jsonify({
+        'status': 'online',
+        'database_tables': tables,
+        'counts': {
+            'admin_users': admin_count,
+            'api_keys': api_key_count,
+            'licenses': license_count
+        },
+        'api_key_info': api_key_info,
+        'message': 'System is running correctly' if api_key_count > 0 else 'No API keys found!'
+    })
+
+@app.route('/api/admin/setup', methods=['POST'])
+def setup_system():
+    """Setup system with default API key"""
+    data = request.json
+    action = data.get('action', 'create_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    if action == 'create_key':
+        # Create new API key
+        new_api_key = f"sk_{uuid.uuid4().hex[:32]}"
+        cursor.execute(
+            "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+            (new_api_key, "Auto-generated Key", "all")
         )
+        db.commit()
         
-        log_activity('LOGIN', f'User {username} logged in')
-        return response
+        return jsonify({
+            'success': True,
+            'api_key': new_api_key,
+            'message': 'New API key created successfully. Save this key!'
+        })
+    
+    elif action == 'reset_admin':
+        # Reset admin password
+        password_hash = argon2_hasher.hash("admin123")
+        cursor.execute(
+            "INSERT OR REPLACE INTO admin_users (username, password_hash) VALUES (?, ?)",
+            ("admin", password_hash)
+        )
+        db.commit()
         
+        return jsonify({
+            'success': True,
+            'message': 'Admin password reset to: admin123'
+        })
+    
+    return jsonify({'success': False, 'message': 'Invalid action'})
+
+# ============== ADMIN API ==============
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    """Login endpoint - returns API key directly"""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM admin_users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+    
+    if user:
+        try:
+            if argon2_hasher.verify(user['password_hash'], password):
+                # Get or create API key
+                cursor.execute("SELECT key FROM api_keys LIMIT 1")
+                api_key_row = cursor.fetchone()
+                
+                if api_key_row:
+                    api_key = api_key_row['key']
+                else:
+                    # Create new API key if none exists
+                    api_key = f"sk_{uuid.uuid4().hex[:32]}"
+                    cursor.execute(
+                        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+                        (api_key, "Auto-generated for login", "all")
+                    )
+                    db.commit()
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Login successful',
+                    'username': username,
+                    'api_key': api_key,  # Trả về API key luôn
+                    'api_key_masked': api_key[:8] + '...' + api_key[-4:]
+                })
+        except:
+            pass
+    
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
+
+@app.route('/api/admin/licenses', methods=['GET'])
+def get_all_licenses():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM licenses ORDER BY created_at DESC')
+    
+    licenses = []
+    for row in cursor.fetchall():
+        license_data = dict(row)
+        licenses.append(license_data)
+    
+    return jsonify({'licenses': licenses})
+
+@app.route('/api/admin/licenses/create', methods=['POST'])
+def create_license():
+    """Create new license - FIXED: Convert days_valid to int"""
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    if not data:
+        return jsonify({'success': False, 'error': 'No data received'}), 400
+    
+    # FIX: Convert days_valid to integer safely
+    try:
+        days_valid = int(data.get('days_valid', 30))
+    except (ValueError, TypeError):
+        days_valid = 30
+    
+    # Ensure days_valid is positive
+    if days_valid <= 0:
+        days_valid = 30
+    if days_valid > 3650:  # Max 10 years
+        days_valid = 3650
+    
+    note = data.get('note', '')
+    
+    license_key = generate_license_key()
+    expires_at = datetime.now() + timedelta(days=days_valid)
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    try:
+        cursor.execute('''
+            INSERT INTO licenses (license_key, expires_at, note, status)
+            VALUES (?, ?, ?, 'active')
+        ''', (license_key, expires_at, note))
+        
+        db.commit()
+        return jsonify({
+            'success': True,
+            'license_key': license_key,
+            'expires_at': expires_at.isoformat(),
+            'message': 'License created successfully'
+        })
     except Exception as e:
-        return jsonify({'success': False, 'error': 'Server error'}), 500
+        return jsonify({'success': False, 'error': str(e)}), 400
 
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    """Admin logout"""
-    response = jsonify({'success': True, 'message': 'Logged out'})
-    response.delete_cookie('token')
-    log_activity('LOGOUT', 'User logged out')
-    return response
+@app.route('/api/admin/licenses/reset', methods=['POST'])
+def reset_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET hwid = NULL, 
+            device_info = NULL,
+            last_check = NULL,
+            is_locked = 0,
+            lock_reason = NULL,
+            status = 'active'
+        WHERE license_key = ?
+    ''', (license_key,))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License reset successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
 
-@app.route('/api/verify', methods=['GET'])
-@login_required
-def verify():
-    """Verify token"""
+@app.route('/api/admin/licenses/lock', methods=['POST'])
+def lock_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    reason = data.get('reason', 'Admin lock')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET is_locked = 1,
+            lock_reason = ?,
+            status = 'locked'
+        WHERE license_key = ?
+    ''', (reason, license_key))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License locked successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+@app.route('/api/admin/licenses/delete', methods=['POST'])
+def delete_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('DELETE FROM licenses WHERE license_key = ?', (license_key,))
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License deleted successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+@app.route('/api/admin/licenses/revoke', methods=['POST'])
+def revoke_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET status = 'revoked',
+            is_locked = 1,
+            lock_reason = 'Revoked by admin'
+        WHERE license_key = ?
+    ''', (license_key,))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License revoked successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
+# ============== CLIENT API ==============
+@app.route('/api/client/validate', methods=['POST'])
+def validate_license():
+    data = request.json
+    license_key = data.get('license_key')
+    hwid = data.get('hwid')
+    device_info = data.get('device_info', '')
+    
+    if not license_key or not hwid:
+        return jsonify({
+            'valid': False,
+            'message': 'License key and HWID are required'
+        }), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM licenses 
+        WHERE license_key = ? 
+        AND status = 'active'
+    ''', (license_key,))
+    
+    license_data = cursor.fetchone()
+    
+    if not license_data:
+        return jsonify({
+            'valid': False,
+            'message': 'Invalid license key'
+        })
+    
+    # Kiểm tra nếu bị locked
+    if license_data['is_locked']:
+        return jsonify({
+            'valid': False,
+            'message': f'License is locked: {license_data.get("lock_reason", "Unknown reason")}'
+        })
+    
+    # Kiểm tra hạn sử dụng
+    expires_at = license_data['expires_at']
+    if expires_at:
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        
+        if expires_at < datetime.now():
+            return jsonify({
+                'valid': False,
+                'message': 'License has expired'
+            })
+    
+    # Nếu license chưa có HWID (lần đầu kích hoạt)
+    if not license_data['hwid']:
+        cursor.execute('''
+            UPDATE licenses 
+            SET hwid = ?,
+                device_info = ?,
+                last_check = ?
+            WHERE license_key = ?
+        ''', (hwid, device_info, datetime.now(), license_key))
+        db.commit()
+        
+        return jsonify({
+            'valid': True,
+            'message': 'License activated successfully',
+            'expires_at': license_data['expires_at']
+        })
+    
+    # Kiểm tra HWID có khớp không
+    if license_data['hwid'] != hwid:
+        return jsonify({
+            'valid': False,
+            'message': 'HWID mismatch. This license is bound to another device.'
+        })
+    
+    # Cập nhật thời gian check cuối
+    cursor.execute('''
+        UPDATE licenses 
+        SET last_check = ?
+        WHERE license_key = ?
+    ''', (datetime.now(), license_key))
+    db.commit()
+    
+    return jsonify({
+        'valid': True,
+        'message': 'License is valid',
+        'expires_at': license_data['expires_at']
+    })
+
+@app.route('/api/client/check', methods=['POST'])
+def check_license():
+    data = request.json
+    license_key = data.get('license_key')
+    hwid = data.get('hwid')
+    
+    if not license_key or not hwid:
+        return jsonify({'valid': False, 'message': 'License key and HWID are required'}), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('SELECT * FROM licenses WHERE license_key = ? AND hwid = ?', (license_key, hwid))
+    license_data = cursor.fetchone()
+    
+    if not license_data:
+        return jsonify({'valid': False, 'message': 'Invalid license or HWID'})
+    
+    return jsonify({
+        'valid': license_data['status'] == 'active' and not license_data['is_locked'],
+        'status': license_data['status'],
+        'is_locked': bool(license_data['is_locked']),
+        'lock_reason': license_data['lock_reason'],
+        'expires_at': license_data['expires_at']
+    })
+
+# ============== API KEY MANAGEMENT ==============
+@app.route('/api/admin/apikeys', methods=['GET'])
+def get_api_keys():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM api_keys ORDER BY created_at DESC")
+    
+    keys = []
+    for row in cursor.fetchall():
+        key_data = dict(row)
+        key_data['key_masked'] = key_data['key'][:8] + '...' + key_data['key'][-4:]
+        keys.append(key_data)
+    
+    return jsonify({'api_keys': keys})
+
+@app.route('/api/admin/apikeys/create', methods=['POST'])
+def create_api_key():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    name = data.get('name', 'New API Key')
+    
+    api_key = f"sk_{uuid.uuid4().hex[:32]}"
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute(
+        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
+        (api_key, name, 'all')
+    )
+    db.commit()
+    
     return jsonify({
         'success': True,
-        'user': request.user
+        'api_key': api_key,
+        'name': name,
+        'message': 'API key created successfully'
     })
 
-# ========== KEY MANAGEMENT ROUTES ==========
-
-@app.route('/api/keys', methods=['GET'])
-@login_required
-def get_keys():
-    """Get all keys with optional filtering"""
-    try:
-        status_filter = request.args.get('status')
-        search_query = request.args.get('search', '').lower()
-        
-        filtered_keys = keys_storage.copy()
-        
-        # Apply status filter
-        if status_filter:
-            filtered_keys = [k for k in filtered_keys if k['status'] == status_filter]
-        
-        # Apply search filter
-        if search_query:
-            filtered_keys = [
-                k for k in filtered_keys
-                if search_query in k['key_name'].lower() or 
-                   search_query in k['server_key'].lower() or
-                   search_query in k['api_key'].lower()
-            ]
-        
-        # Sort by creation date (newest first)
-        filtered_keys.sort(key=lambda x: x['created_at'], reverse=True)
-        
-        # Calculate statistics
-        total = len(keys_storage)
-        active = sum(1 for k in keys_storage if k['status'] == 'active')
-        locked = total - active
-        
-        return jsonify({
-            'success': True,
-            'data': filtered_keys,
-            'stats': {'total': total, 'active': active, 'locked': locked}
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Failed to get keys'}), 500
-
-@app.route('/api/keys', methods=['POST'])
-@login_required
-def create_key():
-    """Create new server key and API key"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'error': 'Invalid request'}), 400
-        
-        key_name = data.get('key_name', '').strip()
-        notes = data.get('notes', '').strip()
-        
-        if not key_name:
-            return jsonify({'success': False, 'error': 'Key name is required'}), 400
-        
-        global next_id
-        
-        # Generate new keys
-        new_key = {
-            'id': next_id,
-            'key_name': key_name,
-            'server_key': generate_server_key(),
-            'api_key': generate_api_key(),
-            'status': 'active',
-            'notes': notes,
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
-            'last_reset_at': None
-        }
-        
-        keys_storage.append(new_key)
-        next_id += 1
-        
-        log_activity('CREATE', f'Created key: {key_name}', new_key['id'])
-        
-        return jsonify({
-            'success': True,
-            'message': 'Key created successfully',
-            'data': new_key
-        }), 201
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Failed to create key'}), 500
-
-@app.route('/api/keys/<int:key_id>/reset', methods=['PUT'])
-@login_required
-def reset_key(key_id):
-    """Reset API key"""
-    try:
-        key = next((k for k in keys_storage if k['id'] == key_id), None)
-        if not key:
-            return jsonify({'success': False, 'error': 'Key not found'}), 404
-        
-        # Generate new API key
-        key['api_key'] = generate_api_key()
-        key['last_reset_at'] = datetime.now().isoformat()
-        key['updated_at'] = datetime.now().isoformat()
-        
-        log_activity('RESET', f'Reset API key for: {key["key_name"]}', key_id)
-        
-        return jsonify({
-            'success': True,
-            'message': 'API key reset successfully',
-            'data': {
-                'id': key['id'],
-                'key_name': key['key_name'],
-                'api_key': key['api_key'],
-                'last_reset_at': key['last_reset_at']
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Failed to reset key'}), 500
-
-@app.route('/api/keys/<int:key_id>/lock', methods=['PUT'])
-@login_required
-def toggle_lock_key(key_id):
-    """Lock or unlock a key"""
-    try:
-        key = next((k for k in keys_storage if k['id'] == key_id), None)
-        if not key:
-            return jsonify({'success': False, 'error': 'Key not found'}), 404
-        
-        # Toggle status
-        new_status = 'locked' if key['status'] == 'active' else 'active'
-        key['status'] = new_status
-        key['updated_at'] = datetime.now().isoformat()
-        
-        action = 'LOCKED' if new_status == 'locked' else 'UNLOCKED'
-        log_activity(action, f'{action} key: {key["key_name"]}', key_id)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Key {new_status} successfully',
-            'data': {
-                'id': key['id'],
-                'key_name': key['key_name'],
-                'status': key['status']
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Failed to update key'}), 500
-
-@app.route('/api/keys/<int:key_id>', methods=['DELETE'])
-@login_required
-def delete_key(key_id):
-    """Delete a key"""
-    try:
-        key = next((k for k in keys_storage if k['id'] == key_id), None)
-        if not key:
-            return jsonify({'success': False, 'error': 'Key not found'}), 404
-        
-        # Remove key
-        keys_storage[:] = [k for k in keys_storage if k['id'] != key_id]
-        
-        log_activity('DELETE', f'Deleted key: {key["key_name"]}', key_id)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Key deleted successfully',
-            'data': {'id': key_id, 'key_name': key['key_name']}
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Failed to delete key'}), 500
-
-# ========== ACTIVITY & STATS ROUTES ==========
-
-@app.route('/api/activity', methods=['GET'])
-@login_required
-def get_activity():
-    """Get activity logs"""
-    try:
-        return jsonify({
-            'success': True,
-            'data': activity_logs[-50:]  # Last 50 activities
-        })
-    except:
-        return jsonify({'success': True, 'data': []})
-
-@app.route('/api/stats', methods=['GET'])
-@login_required
+# ============== STATISTICS ==============
+@app.route('/api/admin/stats', methods=['GET'])
 def get_stats():
-    """Get system statistics"""
-    try:
-        total = len(keys_storage)
-        active = sum(1 for k in keys_storage if k['status'] == 'active')
-        locked = total - active
-        recent_activity = len([a for a in activity_logs 
-                              if datetime.fromisoformat(a['timestamp']) > 
-                              datetime.now() - timedelta(hours=24)])
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'total_keys': total,
-                'active_keys': active,
-                'locked_keys': locked,
-                'recent_activity': recent_activity
-            }
-        })
-    except:
-        return jsonify({
-            'success': True,
-            'data': {'total_keys': 0, 'active_keys': 0, 'locked_keys': 0, 'recent_activity': 0}
-        })
-
-# ========== PUBLIC VALIDATION ROUTE ==========
-
-@app.route('/api/validate', methods=['GET'])
-def validate_key():
-    """Public endpoint to validate a key"""
-    try:
-        key_value = request.args.get('key')
-        if not key_value:
-            return jsonify({'success': False, 'error': 'Key parameter required'}), 400
-        
-        # Find key by server_key or api_key
-        key = next((k for k in keys_storage 
-                   if k['server_key'] == key_value or k['api_key'] == key_value), None)
-        
-        if not key:
-            return jsonify({'success': False, 'error': 'Invalid key'}), 404
-        
-        if key['status'] != 'active':
-            return jsonify({
-                'success': False, 
-                'error': f'Key is {key["status"]}'
-            }), 403
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'key_name': key['key_name'],
-                'status': key['status'],
-                'created_at': key['created_at']
-            }
-        })
-        
-    except:
-        return jsonify({'success': False, 'error': 'Validation failed'}), 500
-
-# ========== HEALTH CHECK ==========
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for Render"""
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute("SELECT COUNT(*) as total FROM licenses")
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as active FROM licenses WHERE status = 'active'")
+    active = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as locked FROM licenses WHERE is_locked = 1")
+    locked = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) as expired FROM licenses WHERE expires_at < datetime('now')")
+    expired = cursor.fetchone()[0]
+    
     return jsonify({
-        'status': 'healthy',
-        'service': 'Admin Panel API',
-        'timestamp': datetime.now().isoformat(),
-        'version': '1.0.0'
+        'total_licenses': total,
+        'active_licenses': active,
+        'locked_licenses': locked,
+        'expired_licenses': expired
     })
 
-# ========== STATIC FILES ==========
-
-@app.route('/style.css')
-def serve_css():
-    return app.send_static_file('style.css')
-
-@app.route('/script.js')
-def serve_js():
-    return app.send_static_file('script.js')
-
-# ========== ERROR HANDLERS ==========
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
-
-@app.errorhandler(500)
-def internal_error(e):
-    return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-# ========== INITIALIZE SAMPLE DATA ==========
-
-def initialize_sample_data():
-    """Initialize with sample data for demo"""
-    global next_id, keys_storage, activity_logs
-    
-    if not keys_storage:
-        sample_keys = [
-            {
-                'id': 1,
-                'key_name': 'Production Server',
-                'server_key': 'sk_prod_' + secrets.token_hex(20),
-                'api_key': 'api_prod_' + secrets.token_hex(28),
-                'status': 'active',
-                'notes': 'Main production server',
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
-                'last_reset_at': None
-            },
-            {
-                'id': 2,
-                'key_name': 'Staging Environment',
-                'server_key': 'sk_stage_' + secrets.token_hex(20),
-                'api_key': 'api_stage_' + secrets.token_hex(28),
-                'status': 'active',
-                'notes': 'Testing and staging',
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
-                'last_reset_at': None
-            },
-            {
-                'id': 3,
-                'key_name': 'Development',
-                'server_key': 'sk_dev_' + secrets.token_hex(20),
-                'api_key': 'api_dev_' + secrets.token_hex(28),
-                'status': 'locked',
-                'notes': 'Development server (currently locked)',
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
-                'last_reset_at': None
-            }
-        ]
-        
-        keys_storage.extend(sample_keys)
-        next_id = 4
-        
-        # Add sample activity logs
-        log_activity('SYSTEM', 'System initialized with sample data')
-        log_activity('CREATE', 'Created key: Production Server', 1)
-        log_activity('CREATE', 'Created key: Staging Environment', 2)
-        log_activity('CREATE', 'Created key: Development', 3)
-        log_activity('LOCK', 'Locked key: Development', 3)
-
-# ========== START APPLICATION ==========
+# ============== INITIALIZE & RUN ==============
+# Khởi tạo database khi ứng dụng start
+with app.app_context():
+    init_db()
 
 if __name__ == '__main__':
-    # Initialize sample data
-    initialize_sample_data()
+    # Lấy port từ environment variable (Render cung cấp)
+    port = int(os.environ.get('PORT', 8080))
     
-    # Get port from environment or default
-    port = int(os.environ.get('PORT', 5000))
-    
-    # Run app
-    print(f"🚀 Admin Panel starting on port {port}")
-    print(f"🔐 Admin login: {app.config['ADMIN_USERNAME']}")
-    print(f"📊 Sample keys initialized: {len(keys_storage)}")
-    
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('FLASK_ENV') != 'production')
+    # Khởi động ứng dụng
+    app.run(host='0.0.0.0', port=port, debug=False)
