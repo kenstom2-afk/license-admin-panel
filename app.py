@@ -4,8 +4,9 @@ import json
 import uuid
 import hashlib
 import re
+import csv
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, g, send_file
+from flask import Flask, request, jsonify, g, send_file, send_from_directory
 from flask_cors import CORS
 from cryptography.fernet import Fernet
 import base64
@@ -42,7 +43,7 @@ def init_db():
         db = get_db()
         cursor = db.cursor()
         
-        # Tạo bảng licenses
+        # Tạo bảng licenses với các cột mới
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS licenses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +57,11 @@ def init_db():
                 note TEXT,
                 is_locked INTEGER DEFAULT 0,
                 lock_reason TEXT,
-                key_type TEXT DEFAULT 'auto'
+                key_type TEXT DEFAULT 'auto',
+                prefix TEXT DEFAULT 'LIC',
+                format_type TEXT DEFAULT 'standard',
+                allow_multiple_devices INTEGER DEFAULT 0,
+                auto_activate INTEGER DEFAULT 1
             )
         ''')
         
@@ -77,27 +82,42 @@ def init_db():
                 key TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 permissions TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used TIMESTAMP,
+                is_active INTEGER DEFAULT 1
+            )
+        ''')
+        
+        # Tạo bảng license_activations (cho multiple devices)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS license_activations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key TEXT NOT NULL,
+                hwid TEXT NOT NULL,
+                device_info TEXT,
+                activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used TIMESTAMP,
+                FOREIGN KEY (license_key) REFERENCES licenses (license_key)
             )
         ''')
         
         # Thêm admin mặc định nếu chưa có
         cursor.execute("SELECT COUNT(*) as count FROM admin_users")
         if cursor.fetchone()[0] == 0:
-            password_hash = argon2_hasher.hash("Ccmscnlk123")
+            password_hash = argon2_hasher.hash("admin123")
             cursor.execute(
                 "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
                 ("admin", password_hash)
             )
-            print("✅ Default admin user created: admin / Admin123")
+            print("✅ Default admin user created: admin / admin123")
         
         # ĐẢM BẢO LUÔN CÓ ÍT NHẤT 1 API KEY
         cursor.execute("SELECT COUNT(*) as count FROM api_keys")
         if cursor.fetchone()[0] == 0:
             default_api_key = f"sk_{uuid.uuid4().hex[:32]}"
             cursor.execute(
-                "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
-                (default_api_key, "Default API Key", "all")
+                "INSERT INTO api_keys (key, name, permissions, is_active) VALUES (?, ?, ?, ?)",
+                (default_api_key, "Default API Key", "all", 1)
             )
             print(f"✅ Default API Key created: {default_api_key[:12]}...")
         
@@ -112,11 +132,30 @@ def validate_api_key():
     
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM api_keys WHERE key = ?", (api_key,))
-    return cursor.fetchone() is not None
+    cursor.execute("SELECT * FROM api_keys WHERE key = ? AND is_active = 1", (api_key,))
+    api_key_data = cursor.fetchone()
+    
+    if api_key_data:
+        # Update last used timestamp
+        cursor.execute("UPDATE api_keys SET last_used = ? WHERE key = ?", (datetime.now(), api_key))
+        db.commit()
+        return True
+    
+    return False
 
-def generate_license_key():
-    return f"LIC-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:8].upper()}"
+def generate_license_key(prefix="LIC", format_type="standard"):
+    """Generate license key with different formats"""
+    if format_type == "compact":
+        # Compact: LIC-XXXXXXXXXXXX
+        return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
+    elif format_type == "extended":
+        # Extended: LIC-XXXX-XXXX-XXXX-XXXX
+        uuid_str = uuid.uuid4().hex.upper()
+        return f"{prefix}-{uuid_str[:4]}-{uuid_str[4:8]}-{uuid_str[8:12]}-{uuid_str[12:16]}"
+    else:
+        # Standard: LIC-XXXX-XXXX-XXXX
+        uuid_str = uuid.uuid4().hex.upper()
+        return f"{prefix}-{uuid_str[:4]}-{uuid_str[4:8]}-{uuid_str[8:12]}"
 
 def validate_custom_key_format(key):
     """Validate custom license key format"""
@@ -137,6 +176,24 @@ def validate_custom_key_format(key):
     
     return True, "Valid key format"
 
+def get_license_status(license_data):
+    """Determine license status"""
+    if license_data['is_locked']:
+        return 'locked'
+    
+    if license_data['status'] == 'revoked':
+        return 'revoked'
+    
+    if license_data['expires_at']:
+        expires_at = license_data['expires_at']
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        
+        if expires_at < datetime.now():
+            return 'expired'
+    
+    return license_data['status']
+
 # ============== ROUTES ==============
 @app.route('/')
 def index():
@@ -144,26 +201,25 @@ def index():
     try:
         return send_file('admin.html')
     except:
-        # Fallback nếu không có file
         return '''
         <!DOCTYPE html>
         <html>
         <head>
-            <title>License Admin</title>
+            <title>LicenseMaster Pro</title>
             <style>
-                body { font-family: Arial; padding: 20px; background: #0f172a; color: white; }
+                body { font-family: Inter, Arial; padding: 20px; background: #0f172a; color: white; }
                 .container { max-width: 800px; margin: 0 auto; }
-                .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
-                .card { background: #1e293b; padding: 20px; border-radius: 10px; margin: 20px 0; }
+                .btn { background: #3a86ff; color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; }
+                .card { background: #1e293b; padding: 20px; border-radius: 12px; margin: 20px 0; border: 1px solid #334155; }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>📋 License Admin Panel</h1>
+                <h1>📋 LicenseMaster Pro</h1>
                 <div class="card">
-                    <p>System is running! API endpoints are active.</p>
-                    <p><a href="/api/admin/debug" target="_blank" style="color: #4cc9f0;">Check System Status</a></p>
-                    <p><button class="btn" onclick="window.location.reload()">Reload Page</button></p>
+                    <p>Professional License Management System is running!</p>
+                    <p><a href="/api/admin/debug" target="_blank" style="color: #00bbf9;">Check System Status</a></p>
+                    <p><button class="btn" onclick="window.location.reload()">Reload Admin Panel</button></p>
                 </div>
             </div>
         </body>
@@ -187,29 +243,37 @@ def debug_info():
     
     # Count records
     admin_count = cursor.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
-    api_key_count = cursor.execute("SELECT COUNT(*) FROM api_keys").fetchone()[0]
+    api_key_count = cursor.execute("SELECT COUNT(*) FROM api_keys WHERE is_active = 1").fetchone()[0]
     license_count = cursor.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
     
-    # Get first API key (masked)
-    cursor.execute("SELECT key, name FROM api_keys LIMIT 1")
+    # Get API key info
+    cursor.execute("SELECT key, name, last_used FROM api_keys WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1")
     api_key_row = cursor.fetchone()
     api_key_info = None
     if api_key_row:
         api_key_info = {
             'name': api_key_row['name'],
-            'key_masked': api_key_row['key'][:8] + '...' + api_key_row['key'][-4:]
+            'key_masked': api_key_row['key'][:8] + '...' + api_key_row['key'][-4:],
+            'last_used': api_key_row['last_used']
         }
+    
+    # Get system stats
+    active_licenses = cursor.execute("SELECT COUNT(*) FROM licenses WHERE status = 'active' AND is_locked = 0").fetchone()[0]
+    locked_licenses = cursor.execute("SELECT COUNT(*) FROM licenses WHERE is_locked = 1").fetchone()[0]
     
     return jsonify({
         'status': 'online',
+        'version': '2.0.0',
         'database_tables': tables,
         'counts': {
             'admin_users': admin_count,
             'api_keys': api_key_count,
-            'licenses': license_count
+            'licenses': license_count,
+            'active_licenses': active_licenses,
+            'locked_licenses': locked_licenses
         },
         'api_key_info': api_key_info,
-        'message': 'System is running correctly' if api_key_count > 0 else 'No API keys found!'
+        'message': 'LicenseMaster Pro is running correctly'
     })
 
 @app.route('/api/admin/setup', methods=['POST'])
@@ -222,23 +286,24 @@ def setup_system():
     cursor = db.cursor()
     
     if action == 'create_key':
-        # Create new API key
+        name = data.get('name', 'Auto-generated Key')
         new_api_key = f"sk_{uuid.uuid4().hex[:32]}"
         cursor.execute(
-            "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
-            (new_api_key, "Auto-generated Key", "all")
+            "INSERT INTO api_keys (key, name, permissions, is_active) VALUES (?, ?, ?, ?)",
+            (new_api_key, name, "all", 1)
         )
         db.commit()
         
         return jsonify({
             'success': True,
             'api_key': new_api_key,
+            'name': name,
             'message': 'New API key created successfully. Save this key!'
         })
     
     elif action == 'reset_admin':
         # Reset admin password
-        password_hash = argon2_hasher.hash("Ccmscnlk")
+        password_hash = argon2_hasher.hash("admin123")
         cursor.execute(
             "INSERT OR REPLACE INTO admin_users (username, password_hash) VALUES (?, ?)",
             ("admin", password_hash)
@@ -247,7 +312,7 @@ def setup_system():
         
         return jsonify({
             'success': True,
-            'message': 'Admin password reset to: Anhhuy'
+            'message': 'Admin password reset to: admin123'
         })
     
     return jsonify({'success': False, 'message': 'Invalid action'})
@@ -269,7 +334,7 @@ def admin_login():
         try:
             if argon2_hasher.verify(user['password_hash'], password):
                 # Get or create API key
-                cursor.execute("SELECT key FROM api_keys LIMIT 1")
+                cursor.execute("SELECT key FROM api_keys WHERE is_active = 1 LIMIT 1")
                 api_key_row = cursor.fetchone()
                 
                 if api_key_row:
@@ -278,8 +343,8 @@ def admin_login():
                     # Create new API key if none exists
                     api_key = f"sk_{uuid.uuid4().hex[:32]}"
                     cursor.execute(
-                        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
-                        (api_key, "Auto-generated for login", "all")
+                        "INSERT INTO api_keys (key, name, permissions, is_active) VALUES (?, ?, ?, ?)",
+                        (api_key, "Auto-generated for login", "all", 1)
                     )
                     db.commit()
                 
@@ -307,13 +372,15 @@ def get_all_licenses():
     licenses = []
     for row in cursor.fetchall():
         license_data = dict(row)
+        # Calculate actual status
+        license_data['actual_status'] = get_license_status(license_data)
         licenses.append(license_data)
     
     return jsonify({'licenses': licenses})
 
 @app.route('/api/admin/licenses/create', methods=['POST'])
 def create_license():
-    """Create new license với option custom key"""
+    """Create new license với nhiều options"""
     if not validate_api_key():
         return jsonify({'error': 'Invalid API key'}), 401
     
@@ -335,7 +402,11 @@ def create_license():
     
     note = data.get('note', '')
     custom_key = data.get('custom_key', '')
-    key_type = 'custom' if custom_key else 'auto'
+    prefix = data.get('prefix', 'LIC').upper().replace(' ', '-')
+    format_type = data.get('format_type', 'standard')
+    key_type = data.get('key_type', 'auto')
+    allow_multiple_devices = bool(data.get('allow_multiple_devices', False))
+    auto_activate = bool(data.get('auto_activate', True))
     
     # Determine which key to use
     if custom_key:
@@ -344,9 +415,14 @@ def create_license():
         if not is_valid:
             return jsonify({'success': False, 'error': f'Invalid custom key: {message}'}), 400
         license_key = custom_key.upper()
+        key_type = 'custom'
     else:
-        # Generate auto key
-        license_key = generate_license_key()
+        # Generate auto key based on type
+        if key_type == 'bulk' or 'count' in data:
+            # This should use the bulk endpoint
+            return jsonify({'success': False, 'error': 'Use /bulk endpoint for bulk generation'}), 400
+        
+        license_key = generate_license_key(prefix, format_type)
     
     expires_at = datetime.now() + timedelta(days=days_valid)
     
@@ -355,9 +431,11 @@ def create_license():
     
     try:
         cursor.execute('''
-            INSERT INTO licenses (license_key, expires_at, note, status, key_type)
-            VALUES (?, ?, ?, 'active', ?)
-        ''', (license_key, expires_at, note, key_type))
+            INSERT INTO licenses (license_key, expires_at, note, status, key_type, prefix, 
+                                 format_type, allow_multiple_devices, auto_activate)
+            VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)
+        ''', (license_key, expires_at, note, key_type, prefix, format_type, 
+              int(allow_multiple_devices), int(auto_activate)))
         
         db.commit()
         return jsonify({
@@ -365,7 +443,9 @@ def create_license():
             'license_key': license_key,
             'expires_at': expires_at.isoformat(),
             'message': 'License created successfully',
-            'key_type': key_type
+            'key_type': key_type,
+            'prefix': prefix,
+            'format_type': format_type
         })
     except sqlite3.IntegrityError:
         return jsonify({'success': False, 'error': 'License key already exists'}), 400
@@ -374,7 +454,7 @@ def create_license():
 
 @app.route('/api/admin/licenses/bulk', methods=['POST'])
 def bulk_create_licenses():
-    """Create multiple licenses with prefix"""
+    """Create multiple licenses với prefix"""
     if not validate_api_key():
         return jsonify({'error': 'Invalid API key'}), 401
     
@@ -386,8 +466,10 @@ def bulk_create_licenses():
     try:
         count = int(data.get('count', 5))
         days_valid = int(data.get('days_valid', 30))
-        prefix = data.get('prefix', 'VIP').upper().replace(' ', '-')
+        prefix = data.get('prefix', 'BULK').upper().replace(' ', '-')
         note = data.get('note', 'Bulk generated')
+        format_type = data.get('format_type', 'standard')
+        allow_multiple_devices = bool(data.get('allow_multiple_devices', False))
     except (ValueError, TypeError):
         return jsonify({'success': False, 'error': 'Invalid parameters'}), 400
     
@@ -403,20 +485,33 @@ def bulk_create_licenses():
     
     try:
         for i in range(count):
-            # Generate key with prefix
-            unique_part = f"{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
-            license_key = f"{prefix}-{unique_part}"
+            # Generate key với prefix và format
+            if format_type == "compact":
+                unique_part = f"{uuid.uuid4().hex[:12].upper()}"
+                license_key = f"{prefix}-{unique_part}"
+            elif format_type == "extended":
+                uuid_str = uuid.uuid4().hex.upper()
+                license_key = f"{prefix}-{uuid_str[:4]}-{uuid_str[4:8]}-{uuid_str[8:12]}-{uuid_str[12:16]}"
+            else:
+                # Standard format
+                uuid_str = uuid.uuid4().hex.upper()
+                license_key = f"{prefix}-{uuid_str[:4]}-{uuid_str[4:8]}-{uuid_str[8:12]}"
+            
             expires_at = datetime.now() + timedelta(days=days_valid)
+            individual_note = f"{note} #{i+1}" if note else f"Bulk generated #{i+1}"
             
             # Insert into database
             cursor.execute('''
-                INSERT INTO licenses (license_key, expires_at, note, status, key_type)
-                VALUES (?, ?, ?, 'active', 'bulk')
-            ''', (license_key, expires_at, f"{note} #{i+1}", 'active'))
+                INSERT INTO licenses (license_key, expires_at, note, status, key_type, prefix, 
+                                     format_type, allow_multiple_devices)
+                VALUES (?, ?, ?, 'active', 'bulk', ?, ?, ?)
+            ''', (license_key, expires_at, individual_note, prefix, format_type, 
+                  int(allow_multiple_devices)))
             
             created_keys.append({
                 'key': license_key,
-                'expires_at': expires_at.isoformat()
+                'expires_at': expires_at.isoformat(),
+                'note': individual_note
             })
         
         db.commit()
@@ -452,6 +547,9 @@ def reset_license():
             status = 'active'
         WHERE license_key = ?
     ''', (license_key,))
+    
+    # Also delete from activations table
+    cursor.execute('DELETE FROM license_activations WHERE license_key = ?', (license_key,))
     
     db.commit()
     
@@ -493,6 +591,35 @@ def lock_license():
     else:
         return jsonify({'success': False, 'message': 'License not found'}), 404
 
+@app.route('/api/admin/licenses/unlock', methods=['POST'])
+def unlock_license():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    license_key = data.get('license_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        UPDATE licenses 
+        SET is_locked = 0,
+            lock_reason = NULL,
+            status = 'active'
+        WHERE license_key = ?
+    ''', (license_key,))
+    
+    db.commit()
+    
+    if cursor.rowcount > 0:
+        return jsonify({
+            'success': True,
+            'message': 'License unlocked successfully'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'License not found'}), 404
+
 @app.route('/api/admin/licenses/delete', methods=['POST'])
 def delete_license():
     if not validate_api_key():
@@ -504,7 +631,11 @@ def delete_license():
     db = get_db()
     cursor = db.cursor()
     
+    # Delete from activations first
+    cursor.execute('DELETE FROM license_activations WHERE license_key = ?', (license_key,))
+    # Then delete from licenses
     cursor.execute('DELETE FROM licenses WHERE license_key = ?', (license_key,))
+    
     db.commit()
     
     if cursor.rowcount > 0:
@@ -544,6 +675,58 @@ def revoke_license():
     else:
         return jsonify({'success': False, 'message': 'License not found'}), 404
 
+@app.route('/api/admin/licenses/export', methods=['GET'])
+def export_licenses():
+    """Export licenses to CSV"""
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT license_key, hwid, status, created_at, expires_at, 
+               key_type, note, is_locked, lock_reason
+        FROM licenses 
+        ORDER BY created_at DESC
+    ''')
+    
+    licenses = []
+    for row in cursor.fetchall():
+        license_data = dict(row)
+        license_data['actual_status'] = get_license_status(license_data)
+        licenses.append(license_data)
+    
+    # Create CSV content
+    csv_content = []
+    csv_content.append(['License Key', 'HWID', 'Status', 'Created At', 'Expires At', 
+                       'Key Type', 'Note', 'Is Locked', 'Lock Reason'])
+    
+    for license in licenses:
+        csv_content.append([
+            license['license_key'],
+            license['hwid'] or '',
+            license['actual_status'],
+            license['created_at'],
+            license['expires_at'] or '',
+            license['key_type'],
+            license['note'] or '',
+            'Yes' if license['is_locked'] else 'No',
+            license['lock_reason'] or ''
+        ])
+    
+    # Create CSV file
+    import io
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerows(csv_content)
+    
+    return jsonify({
+        'success': True,
+        'csv_content': output.getvalue(),
+        'count': len(licenses),
+        'message': f'Exported {len(licenses)} licenses'
+    })
+
 # ============== CLIENT API ==============
 @app.route('/api/client/validate', methods=['POST'])
 def validate_license():
@@ -563,8 +746,7 @@ def validate_license():
     
     cursor.execute('''
         SELECT * FROM licenses 
-        WHERE license_key = ? 
-        AND status = 'active'
+        WHERE license_key = ?
     ''', (license_key,))
     
     license_data = cursor.fetchone()
@@ -575,15 +757,17 @@ def validate_license():
             'message': 'Invalid license key'
         })
     
+    license_dict = dict(license_data)
+    
     # Kiểm tra nếu bị locked
-    if license_data['is_locked']:
+    if license_dict['is_locked']:
         return jsonify({
             'valid': False,
-            'message': f'License is locked: {license_data.get("lock_reason", "Unknown reason")}'
+            'message': f'License is locked: {license_dict.get("lock_reason", "Unknown reason")}'
         })
     
     # Kiểm tra hạn sử dụng
-    expires_at = license_data['expires_at']
+    expires_at = license_dict['expires_at']
     if expires_at:
         if isinstance(expires_at, str):
             expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
@@ -594,43 +778,111 @@ def validate_license():
                 'message': 'License has expired'
             })
     
-    # Nếu license chưa có HWID (lần đầu kích hoạt)
-    if not license_data['hwid']:
+    # Kiểm tra multiple devices
+    allow_multiple = bool(license_dict['allow_multiple_devices'])
+    
+    if not allow_multiple:
+        # Single device mode
+        if not license_dict['hwid']:
+            # First activation
+            cursor.execute('''
+                UPDATE licenses 
+                SET hwid = ?,
+                    device_info = ?,
+                    last_check = ?
+                WHERE license_key = ?
+            ''', (hwid, device_info, datetime.now(), license_key))
+            db.commit()
+            
+            # Record activation
+            cursor.execute('''
+                INSERT INTO license_activations (license_key, hwid, device_info)
+                VALUES (?, ?, ?)
+            ''', (license_key, hwid, device_info))
+            db.commit()
+            
+            return jsonify({
+                'valid': True,
+                'message': 'License activated successfully',
+                'expires_at': license_dict['expires_at'],
+                'first_activation': True
+            })
+        
+        # Check HWID match
+        if license_dict['hwid'] != hwid:
+            return jsonify({
+                'valid': False,
+                'message': 'HWID mismatch. This license is bound to another device.'
+            })
+        
+        # Update last check
         cursor.execute('''
             UPDATE licenses 
-            SET hwid = ?,
-                device_info = ?,
-                last_check = ?
+            SET last_check = ?
             WHERE license_key = ?
-        ''', (hwid, device_info, datetime.now(), license_key))
+        ''', (datetime.now(), license_key))
+        db.commit()
+        
+        # Update activation last used
+        cursor.execute('''
+            UPDATE license_activations 
+            SET last_used = ?
+            WHERE license_key = ? AND hwid = ?
+        ''', (datetime.now(), license_key, hwid))
         db.commit()
         
         return jsonify({
             'valid': True,
-            'message': 'License activated successfully',
-            'expires_at': license_data['expires_at']
+            'message': 'License is valid',
+            'expires_at': license_dict['expires_at'],
+            'first_activation': False
         })
-    
-    # Kiểm tra HWID có khớp không
-    if license_data['hwid'] != hwid:
+    else:
+        # Multiple devices mode
+        # Check if this HWID is already activated
+        cursor.execute('''
+            SELECT * FROM license_activations 
+            WHERE license_key = ? AND hwid = ?
+        ''', (license_key, hwid))
+        
+        existing_activation = cursor.fetchone()
+        
+        if not existing_activation:
+            # New activation for this device
+            cursor.execute('''
+                INSERT INTO license_activations (license_key, hwid, device_info)
+                VALUES (?, ?, ?)
+            ''', (license_key, hwid, device_info))
+            
+            # Update license's last check and HWID (for backward compatibility)
+            cursor.execute('''
+                UPDATE licenses 
+                SET hwid = ?,
+                    device_info = ?,
+                    last_check = ?
+                WHERE license_key = ?
+            ''', (hwid, device_info, datetime.now(), license_key))
+        else:
+            # Update last used
+            cursor.execute('''
+                UPDATE license_activations 
+                SET last_used = ?
+                WHERE license_key = ? AND hwid = ?
+            ''', (datetime.now(), license_key, hwid))
+        
+        db.commit()
+        
+        # Count activations
+        cursor.execute('SELECT COUNT(*) FROM license_activations WHERE license_key = ?', (license_key,))
+        activation_count = cursor.fetchone()[0]
+        
         return jsonify({
-            'valid': False,
-            'message': 'HWID mismatch. This license is bound to another device.'
+            'valid': True,
+            'message': f'License is valid (Device {activation_count})',
+            'expires_at': license_dict['expires_at'],
+            'device_count': activation_count,
+            'first_activation': not bool(existing_activation)
         })
-    
-    # Cập nhật thời gian check cuối
-    cursor.execute('''
-        UPDATE licenses 
-        SET last_check = ?
-        WHERE license_key = ?
-    ''', (datetime.now(), license_key))
-    db.commit()
-    
-    return jsonify({
-        'valid': True,
-        'message': 'License is valid',
-        'expires_at': license_data['expires_at']
-    })
 
 @app.route('/api/client/check', methods=['POST'])
 def check_license():
@@ -644,18 +896,31 @@ def check_license():
     db = get_db()
     cursor = db.cursor()
     
-    cursor.execute('SELECT * FROM licenses WHERE license_key = ? AND hwid = ?', (license_key, hwid))
+    cursor.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key,))
     license_data = cursor.fetchone()
     
     if not license_data:
-        return jsonify({'valid': False, 'message': 'Invalid license or HWID'})
+        return jsonify({'valid': False, 'message': 'Invalid license key'})
+    
+    license_dict = dict(license_data)
+    
+    # Check if multiple devices allowed
+    if bool(license_dict['allow_multiple_devices']):
+        cursor.execute('SELECT * FROM license_activations WHERE license_key = ? AND hwid = ?', (license_key, hwid))
+        activation = cursor.fetchone()
+        hwid_match = bool(activation)
+    else:
+        hwid_match = license_dict['hwid'] == hwid
+    
+    actual_status = get_license_status(license_dict)
     
     return jsonify({
-        'valid': license_data['status'] == 'active' and not license_data['is_locked'],
-        'status': license_data['status'],
-        'is_locked': bool(license_data['is_locked']),
-        'lock_reason': license_data['lock_reason'],
-        'expires_at': license_data['expires_at']
+        'valid': hwid_match and actual_status == 'active',
+        'status': actual_status,
+        'is_locked': bool(license_dict['is_locked']),
+        'lock_reason': license_dict['lock_reason'],
+        'expires_at': license_dict['expires_at'],
+        'hwid_match': hwid_match
     })
 
 # ============== API KEY MANAGEMENT ==============
@@ -690,8 +955,8 @@ def create_api_key():
     cursor = db.cursor()
     
     cursor.execute(
-        "INSERT INTO api_keys (key, name, permissions) VALUES (?, ?, ?)",
-        (api_key, name, 'all')
+        "INSERT INTO api_keys (key, name, permissions, is_active) VALUES (?, ?, ?, ?)",
+        (api_key, name, 'all', 1)
     )
     db.commit()
     
@@ -700,6 +965,35 @@ def create_api_key():
         'api_key': api_key,
         'name': name,
         'message': 'API key created successfully'
+    })
+
+@app.route('/api/admin/apikeys/regenerate', methods=['POST'])
+def regenerate_api_key():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    old_key = data.get('old_key')
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    # Deactivate old key
+    cursor.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", (old_key,))
+    
+    # Create new key
+    new_key = f"sk_{uuid.uuid4().hex[:32]}"
+    cursor.execute(
+        "INSERT INTO api_keys (key, name, permissions, is_active) VALUES (?, ?, ?, ?)",
+        (new_key, 'Regenerated Key', 'all', 1)
+    )
+    
+    db.commit()
+    
+    return jsonify({
+        'success': True,
+        'new_api_key': new_key,
+        'message': 'API key regenerated successfully'
     })
 
 # ============== STATISTICS ==============
@@ -714,7 +1008,7 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) as total FROM licenses")
     total = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) as active FROM licenses WHERE status = 'active'")
+    cursor.execute("SELECT COUNT(*) as active FROM licenses WHERE status = 'active' AND is_locked = 0")
     active = cursor.fetchone()[0]
     
     cursor.execute("SELECT COUNT(*) as locked FROM licenses WHERE is_locked = 1")
@@ -727,12 +1021,54 @@ def get_stats():
     cursor.execute("SELECT key_type, COUNT(*) as count FROM licenses GROUP BY key_type")
     key_types = {row['key_type']: row['count'] for row in cursor.fetchall()}
     
+    # Recent activity
+    cursor.execute("SELECT COUNT(*) as today FROM licenses WHERE date(created_at) = date('now')")
+    today = cursor.fetchone()[0]
+    
+    # Multiple devices count
+    cursor.execute("SELECT COUNT(DISTINCT license_key) as multi_device FROM licenses WHERE allow_multiple_devices = 1")
+    multi_device = cursor.fetchone()[0]
+    
     return jsonify({
         'total_licenses': total,
         'active_licenses': active,
         'locked_licenses': locked,
         'expired_licenses': expired,
-        'key_types': key_types
+        'key_types': key_types,
+        'today_created': today,
+        'multi_device_licenses': multi_device
+    })
+
+@app.route('/api/admin/licenses/search', methods=['POST'])
+def search_licenses():
+    if not validate_api_key():
+        return jsonify({'error': 'Invalid API key'}), 401
+    
+    data = request.json
+    query = data.get('query', '')
+    
+    if not query:
+        return jsonify({'error': 'Search query required'}), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM licenses 
+        WHERE license_key LIKE ? OR hwid LIKE ? OR note LIKE ?
+        ORDER BY created_at DESC
+    ''', (f'%{query}%', f'%{query}%', f'%{query}%'))
+    
+    licenses = []
+    for row in cursor.fetchall():
+        license_data = dict(row)
+        license_data['actual_status'] = get_license_status(license_data)
+        licenses.append(license_data)
+    
+    return jsonify({
+        'success': True,
+        'count': len(licenses),
+        'licenses': licenses
     })
 
 # ============== INITIALIZE & RUN ==============
