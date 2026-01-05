@@ -8,6 +8,7 @@ def generate_token(username):
     """Tạo JWT token"""
     payload = {
         'username': username,
+        'role': 'admin',
         'exp': datetime.utcnow() + timedelta(hours=Config.JWT_EXPIRES_HOURS),
         'iat': datetime.utcnow()
     }
@@ -24,6 +25,9 @@ def verify_token(token):
         return None  # Token hết hạn
     except jwt.InvalidTokenError:
         return None  # Token không hợp lệ
+    except Exception as e:
+        print(f"Token verification error: {str(e)}")
+        return None
 
 def login_required(f):
     """Decorator yêu cầu đăng nhập"""
@@ -31,7 +35,7 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         token = None
         
-        # Lấy token từ header
+        # Lấy token từ Authorization header
         auth_header = request.headers.get('Authorization')
         if auth_header and auth_header.startswith('Bearer '):
             token = auth_header.split(' ')[1]
@@ -39,10 +43,6 @@ def login_required(f):
         # Hoặc từ cookie
         if not token:
             token = request.cookies.get('token')
-        
-        # Hoặc từ query parameter (cho debug)
-        if not token and request.args.get('token'):
-            token = request.args.get('token')
         
         if not token:
             return jsonify({
