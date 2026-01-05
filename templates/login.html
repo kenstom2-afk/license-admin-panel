@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Admin Panel - Đăng nhập</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .login-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            margin: 20px;
+        }
+        
+        .login-box h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        
+        .login-box p {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn-login {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .btn-login:hover {
+            transform: translateY(-2px);
+        }
+        
+        .error-message {
+            color: #ff4757;
+            text-align: center;
+            margin-top: 10px;
+            font-size: 14px;
+            padding: 10px;
+            background: #ffeaea;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .success-message {
+            color: #2ed573;
+            text-align: center;
+            margin-top: 10px;
+            font-size: 14px;
+            padding: 10px;
+            background: #eaffea;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .panel-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 25px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .panel-info h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+            text-align: center;
+        }
+        
+        .panel-info .credentials {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 10px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .panel-info .credential-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .panel-info .credential-item:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }
+        
+        .panel-info .label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .panel-info .value {
+            color: #333;
+            font-weight: bold;
+        }
+        
+        .warning-note {
+            color: #ff4757;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 10px;
+            font-style: italic;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <h1>🔐 License Admin Panel</h1>
+            <p>Hệ thống quản lý License chuyên nghiệp</p>
+            
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="username">Tên đăng nhập:</label>
+                    <input type="text" id="username" name="username" placeholder="Nhập tên đăng nhập" required autocomplete="off">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Mật khẩu:</label>
+                    <input type="password" id="password" name="password" placeholder="Nhập mật khẩu" required autocomplete="off">
+                </div>
+                
+                <button type="submit" class="btn-login">
+                    <span id="loginText">Đăng nhập</span>
+                    <span id="loadingText" style="display: none;">Đang xử lý...</span>
+                </button>
+                
+                <div id="errorMessage" class="error-message"></div>
+                <div id="successMessage" class="success-message"></div>
+            </form>
+            
+            <div class="panel-info">
+                <h3>📋 Thông tin Panel</h3>
+                <div class="credentials">
+                    <div class="credential-item">
+                        <span class="label">Tài khoản Panel:</span>
+                        <span class="value">admin</span>
+                    </div>
+                    <div class="credential-item">
+                        <span class="label">Mật khẩu Panel:</span>
+                        <span class="value">Anhhuy123</span>
+                    </div>
+                </div>
+                <p class="warning-note">
+                    ⚠️ Vui lòng thay đổi mật khẩu sau khi đăng nhập thành công!
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('loginForm');
+            const errorMessage = document.getElementById('errorMessage');
+            const successMessage = document.getElementById('successMessage');
+            const loginText = document.getElementById('loginText');
+            const loadingText = document.getElementById('loadingText');
+            
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const username = document.getElementById('username').value.trim();
+                const password = document.getElementById('password').value;
+                
+                // Hide previous messages
+                errorMessage.style.display = 'none';
+                successMessage.style.display = 'none';
+                
+                // Show loading
+                loginText.style.display = 'none';
+                loadingText.style.display = 'inline';
+                
+                try {
+                    const response = await fetch('/api/admin/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        successMessage.textContent = data.message;
+                        successMessage.style.display = 'block';
+                        
+                        // Clear password field
+                        document.getElementById('password').value = '';
+                        
+                        // Redirect after delay
+                        setTimeout(() => {
+                            window.location.href = data.redirect || '/admin';
+                        }, 1000);
+                    } else {
+                        errorMessage.textContent = data.message || 'Đăng nhập thất bại!';
+                        errorMessage.style.display = 'block';
+                        loginText.style.display = 'inline';
+                        loadingText.style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error('Login error:', error);
+                    errorMessage.textContent = 'Lỗi kết nối đến server! Vui lòng thử lại.';
+                    errorMessage.style.display = 'block';
+                    loginText.style.display = 'inline';
+                    loadingText.style.display = 'none';
+                }
+            });
+            
+            // Auto focus
+            document.getElementById('username').focus();
+            
+            // Clear messages when user starts typing
+            ['username', 'password'].forEach(id => {
+                document.getElementById(id).addEventListener('input', () => {
+                    errorMessage.style.display = 'none';
+                    successMessage.style.display = 'none';
+                });
+            });
+        });
+    </script>
+</body>
+</html>
