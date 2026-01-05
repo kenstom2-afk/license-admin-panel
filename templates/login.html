@@ -3,340 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>License Admin Panel v2.0</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>License Admin Panel - Đăng nhập</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .login-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.5s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .btn-login {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transition: all 0.3s;
+        }
+        
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
 </head>
-<body class="bg-gray-100">
-    <!-- Header -->
-    <header class="bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-3">
-                    <div class="bg-white p-2 rounded-lg">
-                        <i class="fas fa-key text-blue-600 text-xl"></i>
-                    </div>
-                    <div>
-                        <h1 class="text-xl font-bold">License Admin Panel</h1>
-                        <p class="text-sm opacity-90">Phiên bản 2.0 - Quản lý cao cấp</p>
-                    </div>
-                </div>
-                
-                <div class="flex items-center space-x-4">
-                    <div id="serverStatus" class="flex items-center space-x-2 px-3 py-1 bg-white bg-opacity-20 rounded-full">
-                        <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                        <span class="text-sm font-medium">Online</span>
-                    </div>
-                    
-                    <div class="relative group">
-                        <button class="flex items-center space-x-2 hover:bg-white hover:bg-opacity-20 p-2 rounded-lg transition">
-                            <i class="fas fa-user-circle text-xl"></i>
-                            <span id="usernameDisplay">Admin</span>
-                            <i class="fas fa-chevron-down text-xs"></i>
-                        </button>
-                        
-                        <div class="absolute right-0 mt-2 w-48 bg-white text-gray-800 rounded-lg shadow-xl hidden group-hover:block hover:block">
-                            <div class="p-4 border-b">
-                                <p class="font-medium" id="currentUser">Admin</p>
-                                <p class="text-xs text-gray-500">Quản trị viên</p>
-                            </div>
-                            <div class="p-2">
-                                <button onclick="showChangePasswordModal()" class="w-full text-left px-3 py-2 hover:bg-gray-100 rounded flex items-center space-x-2">
-                                    <i class="fas fa-key text-blue-500"></i>
-                                    <span>Đổi mật khẩu</span>
-                                </button>
-                                <button onclick="logout()" class="w-full text-left px-3 py-2 hover:bg-gray-100 rounded flex items-center space-x-2 text-red-500">
-                                    <i class="fas fa-sign-out-alt"></i>
-                                    <span>Đăng xuất</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+<body class="flex items-center justify-center p-4">
+    <div class="login-container w-full max-w-md p-8">
+        <div class="text-center mb-8">
+            <div class="bg-gradient-to-r from-blue-600 to-purple-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-key text-white text-2xl"></i>
             </div>
+            <h1 class="text-2xl font-bold text-gray-800">License Admin Panel</h1>
+            <p class="text-gray-600 mt-2">Hệ thống quản lý License chuyên nghiệp</p>
         </div>
-    </header>
-
-    <!-- Main Content -->
-    <div class="container mx-auto px-4 py-6">
-        <!-- Stats Overview -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-gray-500 text-sm font-medium">Tổng License</p>
-                        <h3 class="text-3xl font-bold text-gray-800 mt-2" id="totalLicenses">0</h3>
-                    </div>
-                    <div class="bg-blue-100 p-3 rounded-full">
-                        <i class="fas fa-key text-blue-600 text-2xl"></i>
-                    </div>
-                </div>
-                <div class="mt-4">
-                    <div class="flex justify-between text-sm">
-                        <span class="text-green-600">
-                            <i class="fas fa-circle text-xs mr-1"></i>
-                            Active: <span id="activeLicenses">0</span>
-                        </span>
-                        <span class="text-red-600">
-                            <i class="fas fa-circle text-xs mr-1"></i>
-                            Expired: <span id="expiredLicenses">0</span>
-                        </span>
-                    </div>
-                </div>
+        
+        <div id="errorAlert" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4 hidden"></div>
+        <div id="successAlert" class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4 hidden"></div>
+        
+        <form id="loginForm">
+            <div class="mb-6">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="username">
+                    <i class="fas fa-user mr-2"></i>Tên đăng nhập
+                </label>
+                <input type="text" id="username" name="username" 
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                       placeholder="Nhập tên đăng nhập" required autocomplete="off">
             </div>
             
-            <div class="bg-white rounded-xl shadow p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-gray-500 text-sm font-medium">Hôm nay</p>
-                        <h3 class="text-3xl font-bold text-gray-800 mt-2" id="todayLicenses">0</h3>
-                    </div>
-                    <div class="bg-green-100 p-3 rounded-full">
-                        <i class="fas fa-calendar-day text-green-600 text-2xl"></i>
-                    </div>
-                </div>
-                <div class="mt-4 text-sm text-gray-600">
-                    License tạo mới trong ngày
-                </div>
+            <div class="mb-8">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="password">
+                    <i class="fas fa-lock mr-2"></i>Mật khẩu
+                </label>
+                <input type="password" id="password" name="password" 
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                       placeholder="Nhập mật khẩu" required autocomplete="off">
             </div>
             
-            <div class="bg-white rounded-xl shadow p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-gray-500 text-sm font-medium">Sắp hết hạn</p>
-                        <h3 class="text-3xl font-bold text-yellow-600 mt-2" id="expiringSoon">0</h3>
-                    </div>
-                    <div class="bg-yellow-100 p-3 rounded-full">
-                        <i class="fas fa-clock text-yellow-600 text-2xl"></i>
-                    </div>
-                </div>
-                <div class="mt-4 text-sm text-gray-600">
-                    License hết hạn trong 7 ngày
-                </div>
-            </div>
-            
-            <div class="bg-white rounded-xl shadow p-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-gray-500 text-sm font-medium">API Keys</p>
-                        <h3 class="text-3xl font-bold text-gray-800 mt-2" id="activeApiKeys">0</h3>
-                    </div>
-                    <div class="bg-purple-100 p-3 rounded-full">
-                        <i class="fas fa-code text-purple-600 text-2xl"></i>
-                    </div>
-                </div>
-                <div class="mt-4">
-                    <button onclick="showCreateApiKeyModal()" class="text-sm text-purple-600 hover:text-purple-700 font-medium">
-                        <i class="fas fa-plus mr-1"></i> Tạo mới
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main Tabs -->
-        <div class="bg-white rounded-xl shadow mb-8">
-            <div class="border-b border-gray-200">
-                <nav class="flex overflow-x-auto">
-                    <button id="tabLicenses" onclick="switchTab('licenses')" class="tab-button active px-6 py-4 font-medium text-blue-600 border-b-2 border-blue-600 whitespace-nowrap">
-                        <i class="fas fa-key mr-2"></i> Quản lý License
-                    </button>
-                    <button id="tabApiKeys" onclick="switchTab('apikeys')" class="tab-button px-6 py-4 font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap">
-                        <i class="fas fa-code mr-2"></i> API Keys
-                    </button>
-                    <button id="tabActivity" onclick="switchTab('activity')" class="tab-button px-6 py-4 font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap">
-                        <i class="fas fa-history mr-2"></i> Hoạt động
-                    </button>
-                    <button id="tabSettings" onclick="switchTab('settings')" class="tab-button px-6 py-4 font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap">
-                        <i class="fas fa-cog mr-2"></i> Cài đặt
-                    </button>
-                </nav>
-            </div>
-            
-            <!-- Tab Content -->
-            <div class="p-6">
-                <!-- Licenses Tab -->
-                <div id="tabContentLicenses" class="tab-content">
-                    <div class="flex flex-col md:flex-row md:items-center justify-between mb-6 space-y-4 md:space-y-0">
-                        <div class="flex-1 md:mr-4">
-                            <div class="relative">
-                                <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-                                <input type="text" id="searchLicense" placeholder="Tìm kiếm license..." 
-                                       class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                            </div>
-                        </div>
-                        <div class="flex space-x-3">
-                            <select id="filterStatus" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                                <option value="">Tất cả trạng thái</option>
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
-                                <option value="expired">Expired</option>
-                                <option value="banned">Banned</option>
-                            </select>
-                            <button onclick="showCreateLicenseModal()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center">
-                                <i class="fas fa-plus mr-2"></i> Tạo License
-                            </button>
-                            <button onclick="showBulkActions()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition flex items-center">
-                                <i class="fas fa-tasks mr-2"></i> Hành động
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-4 py-3 text-left">
-                                        <input type="checkbox" id="selectAll" class="rounded">
-                                    </th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">License Key</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sản phẩm</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chủ sở hữu</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Trạng thái</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hết hạn</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hành động</th>
-                                </tr>
-                            </thead>
-                            <tbody id="licenseTableBody" class="divide-y divide-gray-200">
-                                <!-- License data will be loaded here -->
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <div class="mt-6 flex items-center justify-between">
-                        <div class="text-sm text-gray-600" id="licenseCount">Đang tải...</div>
-                        <div class="flex space-x-2">
-                            <button id="prevPage" onclick="changePage(-1)" class="px-3 py-1 border border-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-                                <i class="fas fa-chevron-left"></i>
-                            </button>
-                            <span id="currentPage" class="px-3 py-1">1</span>
-                            <button id="nextPage" onclick="changePage(1)" class="px-3 py-1 border border-gray-300 rounded disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-                                <i class="fas fa-chevron-right"></i>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- API Keys Tab -->
-                <div id="tabContentApiKeys" class="tab-content hidden">
-                    <div class="mb-6">
-                        <button onclick="showCreateApiKeyModal()" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center">
-                            <i class="fas fa-plus mr-2"></i> Tạo API Key mới
-                        </button>
-                    </div>
-                    
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="apiKeysList">
-                        <!-- API Keys will be loaded here -->
-                    </div>
-                </div>
-                
-                <!-- Activity Tab -->
-                <div id="tabContentActivity" class="tab-content hidden">
-                    <div class="space-y-4 max-h-96 overflow-y-auto pr-4" id="activityList">
-                        <!-- Activity logs will be loaded here -->
-                    </div>
-                </div>
-                
-                <!-- Settings Tab -->
-                <div id="tabContentSettings" class="tab-content hidden">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div class="bg-gray-50 p-6 rounded-xl">
-                            <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
-                                <i class="fas fa-user-shield mr-2"></i> Tài khoản
-                            </h3>
-                            <div class="space-y-4">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Tên đăng nhập</label>
-                                    <input type="text" value="admin" class="w-full px-4 py-2 bg-gray-100 border border-gray-300 rounded-lg" readonly>
-                                </div>
-                                <button onclick="showChangePasswordModal()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-                                    <i class="fas fa-key mr-2"></i> Đổi mật khẩu
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="bg-gray-50 p-6 rounded-xl">
-                            <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
-                                <i class="fas fa-info-circle mr-2"></i> Thông tin hệ thống
-                            </h3>
-                            <div class="space-y-3">
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Phiên bản</span>
-                                    <span class="font-medium">2.0.0</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Database</span>
-                                    <span class="font-medium text-green-600">✓ Đang hoạt động</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">API Endpoint</span>
-                                    <code class="text-sm bg-gray-200 px-2 py-1 rounded">/api/verify</code>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+            <button type="submit" id="loginBtn" class="btn-login w-full text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline">
+                <span id="loginText">Đăng nhập</span>
+                <span id="loadingText" class="hidden">
+                    <span class="spinner mr-2"></span> Đang xác thực...
+                </span>
+            </button>
+        </form>
+        
+        <div class="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div class="flex items-start">
+                <i class="fas fa-shield-alt text-blue-600 mt-1 mr-3"></i>
+                <div>
+                    <p class="font-bold text-blue-800 mb-2">🔒 Thông tin bảo mật:</p>
+                    <ul class="text-sm text-blue-700 space-y-1">
+                        <li>• Vui lòng thay đổi mật khẩu mặc định sau khi đăng nhập</li>
+                        <li>• Không chia sẻ thông tin đăng nhập</li>
+                        <li>• Đăng xuất sau khi sử dụng xong</li>
+                    </ul>
                 </div>
             </div>
         </div>
     </div>
-
-    <!-- Modals will be injected by JavaScript -->
-
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="/static/js/admin.js"></script>
     
     <script>
-        // Tab switching
-        function switchTab(tabName) {
-            // Update tab buttons
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active', 'text-blue-600', 'border-blue-600');
-                btn.classList.add('text-gray-500');
-            });
-            
-            document.getElementById('tab' + tabName.charAt(0).toUpperCase() + tabName.slice(1))
-                .classList.add('active', 'text-blue-600', 'border-blue-600');
-            
-            // Update tab content
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.add('hidden');
-            });
-            
-            document.getElementById('tabContent' + tabName.charAt(0).toUpperCase() + tabName.slice(1))
-                .classList.remove('hidden');
-            
-            // Load data for tab if needed
-            if (tabName === 'activity') {
-                loadActivity();
-            }
-        }
-        
-        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            loadStats();
-            loadLicenses();
-            setInterval(loadStats, 30000); // Refresh stats every 30 seconds
+            const form = document.getElementById('loginForm');
+            const errorAlert = document.getElementById('errorAlert');
+            const successAlert = document.getElementById('successAlert');
+            const loginBtn = document.getElementById('loginBtn');
+            const loginText = document.getElementById('loginText');
+            const loadingText = document.getElementById('loadingText');
             
-            // Search functionality
-            const searchInput = document.getElementById('searchLicense');
-            let searchTimeout;
-            searchInput.addEventListener('input', function() {
-                clearTimeout(searchTimeout);
-                searchTimeout = setTimeout(() => {
-                    loadLicenses();
-                }, 500);
+            form.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const username = document.getElementById('username').value.trim();
+                const password = document.getElementById('password').value;
+                
+                // Hide alerts
+                errorAlert.classList.add('hidden');
+                successAlert.classList.add('hidden');
+                
+                // Validate
+                if (!username || !password) {
+                    showError('Vui lòng nhập đầy đủ thông tin đăng nhập');
+                    return;
+                }
+                
+                // Show loading
+                loginText.classList.add('hidden');
+                loadingText.classList.remove('hidden');
+                loginBtn.disabled = true;
+                
+                try {
+                    const response = await fetch('/api/admin/login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        showSuccess(data.message || 'Đăng nhập thành công!');
+                        
+                        // Clear password field
+                        document.getElementById('password').value = '';
+                        
+                        // Redirect after delay
+                        setTimeout(() => {
+                            window.location.href = data.redirect || '/admin';
+                        }, 1000);
+                    } else {
+                        showError(data.message || 'Tên đăng nhập hoặc mật khẩu không đúng!');
+                        resetLoginButton();
+                    }
+                } catch (error) {
+                    console.error('Login error:', error);
+                    showError('Lỗi kết nối đến máy chủ. Vui lòng thử lại sau.');
+                    resetLoginButton();
+                }
             });
             
-            // Filter functionality
-            document.getElementById('filterStatus').addEventListener('change', loadLicenses);
+            function showError(message) {
+                errorAlert.textContent = message;
+                errorAlert.classList.remove('hidden');
+            }
             
-            // Select all functionality
-            document.getElementById('selectAll').addEventListener('change', function(e) {
-                const checkboxes = document.querySelectorAll('.license-checkbox');
-                checkboxes.forEach(checkbox => {
-                    checkbox.checked = e.target.checked;
+            function showSuccess(message) {
+                successAlert.textContent = message;
+                successAlert.classList.remove('hidden');
+            }
+            
+            function resetLoginButton() {
+                loginText.classList.remove('hidden');
+                loadingText.classList.add('hidden');
+                loginBtn.disabled = false;
+            }
+            
+            // Auto focus
+            document.getElementById('username').focus();
+            
+            // Clear error when user starts typing
+            ['username', 'password'].forEach(id => {
+                document.getElementById(id).addEventListener('input', () => {
+                    errorAlert.classList.add('hidden');
+                    successAlert.classList.add('hidden');
                 });
+            });
+            
+            // Enter key navigation
+            document.getElementById('username').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    document.getElementById('password').focus();
+                }
+            });
+            
+            document.getElementById('password').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    form.dispatchEvent(new Event('submit'));
+                }
             });
         });
     </script>
