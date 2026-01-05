@@ -1,12 +1,31 @@
 services:
+  # PostgreSQL Database
+  - type: postgres
+    name: admin-panel-db
+    plan: free
+    databaseName: admin_panel
+    ipAllowList: []
+  
+  # Flask Backend
   - type: web
-    name: license-admin-system
+    name: admin-panel
     env: python
+    region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
+    healthCheckPath: /health
     envVars:
-      - key: SECRET_KEY
-        generateValue: true
       - key: FLASK_ENV
         value: production
-    autoDeploy: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false  # Đặt password trong Render Dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: admin-panel-db
+          property: connectionString
