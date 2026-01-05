@@ -1,14 +1,15 @@
 import os
 from dotenv import load_dotenv
 
+# Tải .env file nếu có
 load_dotenv()
 
 class Config:
     # Flask
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
     
-    # Database
-    DATABASE_URL = os.environ.get('DATABASE_URL')
+    # Database - ƯU TIÊN BIẾN MÔI TRƯỜNG TRỰC TIẾP
+    DATABASE_URL = os.environ.get('DATABASE_URL', '')
     
     # Admin Credentials
     ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
