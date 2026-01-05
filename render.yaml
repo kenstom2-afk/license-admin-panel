@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (Tạo TRƯỚC)
   - type: postgres
     name: admin-panel-db
     plan: free
@@ -16,6 +16,7 @@ services:
       pip install -r requirements.txt
     startCommand: gunicorn app:app
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: FLASK_ENV
         value: production
@@ -24,7 +25,7 @@ services:
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
-        sync: false  # Đặt password trong Render Dashboard
+        value: admin123  # ĐỔI TRONG PRODUCTION!
       - key: JWT_SECRET
         generateValue: true
       - key: DATABASE_URL
