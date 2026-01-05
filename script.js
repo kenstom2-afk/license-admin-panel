@@ -15,36 +15,43 @@ class AdminPanel {
     
     bindEvents() {
         // Login
-        document.getElementById('loginBtn').addEventListener('click', () => this.login());
-        document.getElementById('password').addEventListener('keypress', (e) => {
+        document.getElementById('loginBtn')?.addEventListener('click', () => this.login());
+        document.getElementById('password')?.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.login();
         });
         
         // Logout
-        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
+        document.getElementById('logoutBtn')?.addEventListener('click', () => this.logout());
         
         // Refresh
-        document.getElementById('refreshBtn').addEventListener('click', () => this.loadKeys());
+        document.getElementById('refreshBtn')?.addEventListener('click', () => this.loadData());
         
         // Create Key
-        document.getElementById('createKeyBtn').addEventListener('click', () => this.showCreateModal());
-        document.getElementById('confirmCreate').addEventListener('click', () => this.createKey());
-        document.getElementById('cancelCreate').addEventListener('click', () => this.hideCreateModal());
+        document.getElementById('createKeyBtn')?.addEventListener('click', () => this.showCreateModal());
+        document.getElementById('createFirstKey')?.addEventListener('click', () => this.showCreateModal());
+        document.getElementById('confirmCreate')?.addEventListener('click', () => this.createKey());
+        document.getElementById('cancelCreate')?.addEventListener('click', () => this.hideCreateModal());
         
         // Search & Filter
-        document.getElementById('searchInput').addEventListener('input', (e) => {
-            this.filterKeys(e.target.value);
-        });
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                this.filterKeys(e.target.value);
+            });
+        }
         
-        document.getElementById('statusFilter').addEventListener('change', (e) => {
-            this.filterByStatus(e.target.value);
-        });
+        const statusFilter = document.getElementById('statusFilter');
+        if (statusFilter) {
+            statusFilter.addEventListener('change', (e) => {
+                this.filterByStatus(e.target.value);
+            });
+        }
         
         // Close modals
         document.querySelectorAll('.close-modal').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.modal').forEach(modal => {
-                    modal.classList.remove('show');
+                    modal.classList.add('hidden');
                 });
             });
         });
@@ -53,7 +60,7 @@ class AdminPanel {
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
-                    modal.classList.remove('show');
+                    modal.classList.add('hidden');
                 }
             });
         });
@@ -68,25 +75,30 @@ class AdminPanel {
     }
     
     showLogin() {
-        document.getElementById('loginScreen').style.display = 'flex';
-        document.getElementById('dashboard').classList.add('hidden');
+        const loginScreen = document.getElementById('loginScreen');
+        const dashboard = document.getElementById('dashboard');
+        
+        if (loginScreen) loginScreen.style.display = 'flex';
+        if (dashboard) dashboard.classList.add('hidden');
     }
     
     showDashboard() {
-        document.getElementById('loginScreen').style.display = 'none';
-        document.getElementById('dashboard').classList.remove('hidden');
-        this.loadKeys();
-        this.loadStats();
-        this.loadActivity();
+        const loginScreen = document.getElementById('loginScreen');
+        const dashboard = document.getElementById('dashboard');
+        
+        if (loginScreen) loginScreen.style.display = 'none';
+        if (dashboard) dashboard.classList.remove('hidden');
+        
+        this.loadData();
     }
     
     async login() {
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
+        const username = document.getElementById('username')?.value;
+        const password = document.getElementById('password')?.value;
         const errorEl = document.getElementById('loginError');
         
         if (!username || !password) {
-            this.showError('Vui lòng nhập username và password');
+            this.showError('Vui lòng nhập username và password', errorEl);
             return;
         }
         
@@ -104,15 +116,20 @@ class AdminPanel {
             if (data.success) {
                 this.token = data.token;
                 localStorage.setItem('admin_token', this.token);
-                document.getElementById('usernameDisplay').textContent = data.user.username;
+                
+                const usernameDisplay = document.getElementById('usernameDisplay');
+                if (usernameDisplay) {
+                    usernameDisplay.textContent = data.user.username;
+                }
+                
                 this.showDashboard();
                 this.showToast('Đăng nhập thành công');
             } else {
-                this.showError(data.error || 'Đăng nhập thất bại');
+                this.showError(data.error || 'Đăng nhập thất bại', errorEl);
             }
         } catch (error) {
-            this.showError('Lỗi kết nối đến server');
             console.error('Login error:', error);
+            this.showError('Lỗi kết nối đến server', errorEl);
         }
     }
     
@@ -127,12 +144,16 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                document.getElementById('usernameDisplay').textContent = data.data.user.username;
+                const usernameDisplay = document.getElementById('usernameDisplay');
+                if (usernameDisplay) {
+                    usernameDisplay.textContent = data.data.user.username;
+                }
                 this.showDashboard();
             } else {
                 this.showLogin();
             }
         } catch (error) {
+            console.error('Verify token error:', error);
             this.showLogin();
         }
     }
@@ -144,14 +165,24 @@ class AdminPanel {
         this.showToast('Đã đăng xuất');
     }
     
+    async loadData() {
+        await Promise.all([
+            this.loadKeys(),
+            this.loadStats(),
+            this.loadActivity()
+        ]);
+    }
+    
     async loadKeys() {
         const tableBody = document.getElementById('keysTableBody');
         const loading = document.getElementById('loading');
         const table = document.getElementById('keysTable');
         const noData = document.getElementById('noData');
         
+        if (!tableBody || !loading || !table || !noData) return;
+        
         loading.classList.remove('hidden');
-        table.classList.remove('show');
+        table.classList.add('hidden');
         noData.classList.add('hidden');
         
         try {
@@ -166,18 +197,19 @@ class AdminPanel {
             if (data.success) {
                 this.keys = data.data;
                 this.renderKeys(this.keys);
-                this.updateStats(data.stats);
                 
                 if (this.keys.length > 0) {
-                    table.classList.add('show');
+                    table.classList.remove('hidden');
                     noData.classList.add('hidden');
                 } else {
                     noData.classList.remove('hidden');
                 }
+            } else {
+                this.showToast('Lỗi khi tải dữ liệu keys');
             }
         } catch (error) {
             console.error('Error loading keys:', error);
-            this.showError('Lỗi khi tải dữ liệu');
+            this.showToast('Lỗi kết nối khi tải keys');
         } finally {
             loading.classList.add('hidden');
         }
@@ -185,11 +217,15 @@ class AdminPanel {
     
     renderKeys(keys) {
         const tableBody = document.getElementById('keysTableBody');
+        if (!tableBody) return;
+        
         tableBody.innerHTML = '';
         
         keys.forEach(key => {
             const row = document.createElement('tr');
-            const createdDate = new Date(key.created_at).toLocaleDateString('vi-VN');
+            const createdDate = key.created_at 
+                ? new Date(key.created_at).toLocaleDateString('vi-VN')
+                : 'N/A';
             
             row.innerHTML = `
                 <td>${key.id}</td>
@@ -244,6 +280,9 @@ class AdminPanel {
     }
     
     async loadActivity() {
+        const activityList = document.getElementById('activityList');
+        if (!activityList) return;
+        
         try {
             const response = await fetch(`${this.baseUrl}/api/activity`, {
                 headers: {
@@ -258,26 +297,38 @@ class AdminPanel {
             }
         } catch (error) {
             console.error('Error loading activity:', error);
+            activityList.innerHTML = '<div class="error">Lỗi tải hoạt động</div>';
         }
     }
     
     renderActivity(activities) {
         const activityList = document.getElementById('activityList');
+        if (!activityList) return;
+        
+        if (!activities || activities.length === 0) {
+            activityList.innerHTML = '<div class="no-activity">Không có hoạt động nào</div>';
+            return;
+        }
+        
         activityList.innerHTML = '';
         
         activities.slice(0, 5).forEach(activity => {
-            const time = new Date(activity.performed_at).toLocaleTimeString('vi-VN');
-            const date = new Date(activity.performed_at).toLocaleDateString('vi-VN');
+            const time = activity.performed_at 
+                ? new Date(activity.performed_at).toLocaleTimeString('vi-VN')
+                : '';
+            const date = activity.performed_at 
+                ? new Date(activity.performed_at).toLocaleDateString('vi-VN')
+                : '';
             
             const item = document.createElement('div');
             item.className = 'activity-item';
             item.innerHTML = `
                 <div>
-                    <div class="activity-action ${activity.action.toLowerCase()}">
+                    <div class="activity-action ${activity.action?.toLowerCase()}">
                         <i class="fas fa-${this.getActionIcon(activity.action)}"></i>
                         ${this.getActionText(activity.action)}
                     </div>
-                    <div class="activity-details">${activity.details}</div>
+                    <div class="activity-details">${activity.details || ''}</div>
                 </div>
                 <div class="activity-time">${date} ${time}</div>
             `;
@@ -287,49 +338,55 @@ class AdminPanel {
     }
     
     getActionIcon(action) {
-        switch(action) {
-            case 'CREATE': return 'plus-circle';
-            case 'RESET': return 'redo';
-            case 'LOCK': return 'lock';
-            case 'UNLOCK': return 'unlock';
-            case 'DELETE': return 'trash';
+        if (!action) return 'info-circle';
+        switch(action.toLowerCase()) {
+            case 'create': return 'plus-circle';
+            case 'reset': return 'redo';
+            case 'lock': return 'lock';
+            case 'unlock': return 'unlock';
+            case 'delete': return 'trash';
             default: return 'info-circle';
         }
     }
     
     getActionText(action) {
-        switch(action) {
-            case 'CREATE': return 'Tạo key mới';
-            case 'RESET': return 'Reset API key';
-            case 'LOCK': return 'Khóa key';
-            case 'UNLOCK': return 'Mở khóa key';
-            case 'DELETE': return 'Xóa key';
+        if (!action) return 'Hoạt động';
+        switch(action.toLowerCase()) {
+            case 'create': return 'Tạo key mới';
+            case 'reset': return 'Reset API key';
+            case 'lock': return 'Khóa key';
+            case 'unlock': return 'Mở khóa key';
+            case 'delete': return 'Xóa key';
             default: return action;
         }
     }
     
-    updateStats(stats) {
-        document.getElementById('totalKeys').textContent = stats.total || 0;
-        document.getElementById('activeKeys').textContent = stats.active || 0;
-        document.getElementById('lockedKeys').textContent = stats.locked || 0;
-    }
-    
     showCreateModal() {
-        document.getElementById('newKeyName').value = '';
-        document.getElementById('newKeyNotes').value = '';
-        document.getElementById('createModal').classList.add('show');
+        const modal = document.getElementById('createModal');
+        if (modal) {
+            modal.classList.remove('hidden');
+        }
+        
+        const keyNameInput = document.getElementById('newKeyName');
+        const keyNotesInput = document.getElementById('newKeyNotes');
+        
+        if (keyNameInput) keyNameInput.value = '';
+        if (keyNotesInput) keyNotesInput.value = '';
     }
     
     hideCreateModal() {
-        document.getElementById('createModal').classList.remove('show');
+        const modal = document.getElementById('createModal');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
     }
     
     async createKey() {
-        const keyName = document.getElementById('newKeyName').value;
-        const notes = document.getElementById('newKeyNotes').value;
+        const keyName = document.getElementById('newKeyName')?.value;
+        const notes = document.getElementById('newKeyNotes')?.value;
         
         if (!keyName) {
-            this.showError('Vui lòng nhập tên key');
+            this.showToast('Vui lòng nhập tên key');
             return;
         }
         
@@ -340,68 +397,79 @@ class AdminPanel {
                     'Authorization': `Bearer ${this.token}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ key_name: keyName, notes })
+                body: JSON.stringify({ 
+                    key_name: keyName, 
+                    notes: notes || '' 
+                })
             });
             
             const data = await response.json();
             
             if (data.success) {
                 this.hideCreateModal();
-                this.loadKeys();
-                this.loadActivity();
+                this.loadData();
                 this.showToast('Key đã được tạo thành công');
             } else {
-                this.showError(data.error || 'Lỗi khi tạo key');
+                this.showToast(data.error || 'Lỗi khi tạo key');
             }
         } catch (error) {
-            this.showError('Lỗi kết nối đến server');
             console.error('Create key error:', error);
+            this.showToast('Lỗi kết nối đến server');
         }
     }
     
-    async viewKey(keyId) {
-        try {
-            const key = this.keys.find(k => k.id === keyId);
-            if (!key) return;
+    viewKey(keyId) {
+        const key = this.keys.find(k => k.id === keyId);
+        if (!key) {
+            this.showToast('Key không tìm thấy');
+            return;
+        }
+        
+        this.currentKeyId = keyId;
+        
+        // Fill modal with key details
+        document.getElementById('detailKeyId').textContent = key.id;
+        document.getElementById('detailKeyName').textContent = key.key_name;
+        document.getElementById('detailServerKey').textContent = key.server_key;
+        document.getElementById('detailApiKey').textContent = key.api_key;
+        
+        const statusBadge = document.getElementById('detailStatus');
+        if (statusBadge) {
+            statusBadge.textContent = key.status === 'active' ? 'Active' : 'Locked';
+            statusBadge.className = `status-badge ${key.status}`;
+        }
+        
+        document.getElementById('detailCreatedAt').textContent = key.created_at 
+            ? new Date(key.created_at).toLocaleString('vi-VN')
+            : 'N/A';
             
-            this.currentKeyId = keyId;
+        document.getElementById('detailLastReset').textContent = key.last_reset_at 
+            ? new Date(key.last_reset_at).toLocaleString('vi-VN')
+            : 'Chưa reset';
             
-            // Fill modal with key details
-            document.getElementById('detailKeyName').textContent = key.key_name;
-            document.getElementById('detailServerKey').textContent = key.server_key;
-            document.getElementById('detailApiKey').textContent = key.api_key;
-            document.getElementById('detailStatus').textContent = key.status === 'active' ? 'Active' : 'Locked';
-            document.getElementById('detailStatus').className = `status-badge ${key.status}`;
-            document.getElementById('detailCreatedAt').textContent = new Date(key.created_at).toLocaleString('vi-VN');
-            document.getElementById('detailLastReset').textContent = key.last_reset_at 
-                ? new Date(key.last_reset_at).toLocaleString('vi-VN')
-                : 'Chưa reset';
-            document.getElementById('detailNotes').textContent = key.notes || 'Không có ghi chú';
-            
-            // Bind action buttons
-            const resetBtn = document.getElementById('resetKeyBtn');
-            const lockBtn = document.getElementById('toggleLockBtn');
-            const deleteBtn = document.getElementById('deleteKeyBtn');
-            
-            resetBtn.onclick = () => this.resetKey(keyId);
-            lockBtn.onclick = () => this.toggleLock(keyId);
-            deleteBtn.onclick = () => this.deleteKey(keyId);
-            
-            // Update lock button text
+        document.getElementById('detailNotes').textContent = key.notes || 'Không có ghi chú';
+        
+        // Update lock button
+        const lockBtn = document.getElementById('toggleLockBtn');
+        if (lockBtn) {
             lockBtn.innerHTML = `<i class="fas fa-${key.status === 'active' ? 'lock' : 'unlock'}"></i> ${key.status === 'active' ? 'Khóa Key' : 'Mở khóa Key'}`;
-            
-            // Bind copy buttons
-            document.querySelectorAll('.btn-copy').forEach(btn => {
-                btn.onclick = (e) => {
-                    const targetId = e.target.closest('.btn-copy').dataset.target;
-                    const text = document.getElementById(targetId).textContent;
+        }
+        
+        // Bind copy buttons
+        document.querySelectorAll('.btn-copy').forEach(btn => {
+            btn.onclick = (e) => {
+                const targetId = e.currentTarget.dataset.target;
+                const text = document.getElementById(targetId)?.textContent;
+                if (text) {
                     this.copyToClipboard(text);
-                };
-            });
-            
-            document.getElementById('keyModal').classList.add('show');
-        } catch (error) {
-            console.error('Error viewing key:', error);
+                }
+            };
+        });
+        
+        // Show modal
+        const modal = document.getElementById('keyModal');
+        if (modal) {
+            modal.classList.remove('hidden');
         }
     }
     
@@ -421,24 +489,29 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                this.loadKeys();
-                this.loadActivity();
+                this.loadData();
                 this.showToast('Key đã được reset thành công');
                 
-                // Close key modal if open
-                document.getElementById('keyModal').classList.remove('show');
+                // Close key modal
+                const modal = document.getElementById('keyModal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                }
             } else {
-                this.showError(data.error || 'Lỗi khi reset key');
+                this.showToast(data.error || 'Lỗi khi reset key');
             }
         } catch (error) {
-            this.showError('Lỗi kết nối đến server');
             console.error('Reset key error:', error);
+            this.showToast('Lỗi kết nối đến server');
         }
     }
     
     async toggleLock(keyId) {
         const key = this.keys.find(k => k.id === keyId);
-        if (!key) return;
+        if (!key) {
+            this.showToast('Key không tìm thấy');
+            return;
+        }
         
         const action = key.status === 'active' ? 'khóa' : 'mở khóa';
         
@@ -457,18 +530,20 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                this.loadKeys();
-                this.loadActivity();
+                this.loadData();
                 this.showToast(`Key đã được ${action} thành công`);
                 
-                // Close key modal if open
-                document.getElementById('keyModal').classList.remove('show');
+                // Close key modal
+                const modal = document.getElementById('keyModal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                }
             } else {
-                this.showError(data.error || `Lỗi khi ${action} key`);
+                this.showToast(data.error || `Lỗi khi ${action} key`);
             }
         } catch (error) {
-            this.showError('Lỗi kết nối đến server');
             console.error('Toggle lock error:', error);
+            this.showToast('Lỗi kết nối đến server');
         }
     }
     
@@ -488,22 +563,29 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                this.loadKeys();
-                this.loadActivity();
+                this.loadData();
                 this.showToast('Key đã được xóa thành công');
                 
-                // Close key modal if open
-                document.getElementById('keyModal').classList.remove('show');
+                // Close key modal
+                const modal = document.getElementById('keyModal');
+                if (modal) {
+                    modal.classList.add('hidden');
+                }
             } else {
-                this.showError(data.error || 'Lỗi khi xóa key');
+                this.showToast(data.error || 'Lỗi khi xóa key');
             }
         } catch (error) {
-            this.showError('Lỗi kết nối đến server');
             console.error('Delete key error:', error);
+            this.showToast('Lỗi kết nối đến server');
         }
     }
     
     filterKeys(searchTerm) {
+        if (!searchTerm) {
+            this.renderKeys(this.keys);
+            return;
+        }
+        
         const filtered = this.keys.filter(key => 
             key.key_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
             key.server_key.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -524,6 +606,7 @@ class AdminPanel {
     }
     
     truncateKey(key, length = 20) {
+        if (!key) return '';
         if (key.length <= length) return key;
         return key.substring(0, length) + '...';
     }
@@ -533,12 +616,15 @@ class AdminPanel {
             this.showToast('Đã sao chép vào clipboard');
         }).catch(err => {
             console.error('Copy failed:', err);
+            this.showToast('Lỗi khi sao chép');
         });
     }
     
     showToast(message) {
         const toast = document.getElementById('toast');
         const messageEl = document.getElementById('toastMessage');
+        
+        if (!toast || !messageEl) return;
         
         messageEl.textContent = message;
         toast.classList.remove('hidden');
@@ -548,19 +634,29 @@ class AdminPanel {
         }, 3000);
     }
     
-    showError(message) {
-        const errorEl = document.getElementById('loginError');
-        errorEl.textContent = message;
-        errorEl.style.display = 'block';
+    showError(message, element) {
+        if (!element) return;
+        
+        element.textContent = message;
+        element.style.display = 'block';
         
         setTimeout(() => {
-            errorEl.style.display = 'none';
+            element.style.display = 'none';
         }, 5000);
     }
 }
 
 // Initialize admin panel when page loads
 let admin;
+
 document.addEventListener('DOMContentLoaded', () => {
-    admin = new AdminPanel();
+    try {
+        admin = new AdminPanel();
+        console.log('Admin Panel initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize Admin Panel:', error);
+    }
 });
+
+// Make admin accessible globally for onclick events
+window.admin = admin;
