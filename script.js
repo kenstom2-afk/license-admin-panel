@@ -1,3 +1,8 @@
+/**
+ * Admin Panel - Server Key & API Manager
+ * Frontend JavaScript
+ */
+
 class AdminPanel {
     constructor() {
         this.baseUrl = window.location.origin;
@@ -30,28 +35,22 @@ class AdminPanel {
         document.getElementById('createKeyBtn')?.addEventListener('click', () => this.showCreateModal());
         document.getElementById('createFirstKey')?.addEventListener('click', () => this.showCreateModal());
         document.getElementById('confirmCreate')?.addEventListener('click', () => this.createKey());
-        document.getElementById('cancelCreate')?.addEventListener('click', () => this.hideCreateModal());
+        document.getElementById('cancelCreate')?.addEventListener('click', () => this.hideModal('createModal'));
         
         // Search & Filter
-        const searchInput = document.getElementById('searchInput');
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                this.filterKeys(e.target.value);
-            });
-        }
+        document.getElementById('searchInput')?.addEventListener('input', (e) => {
+            this.filterKeys(e.target.value);
+        });
         
-        const statusFilter = document.getElementById('statusFilter');
-        if (statusFilter) {
-            statusFilter.addEventListener('change', (e) => {
-                this.filterByStatus(e.target.value);
-            });
-        }
+        document.getElementById('statusFilter')?.addEventListener('change', (e) => {
+            this.filterByStatus(e.target.value);
+        });
         
         // Close modals
         document.querySelectorAll('.close-modal').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.modal').forEach(modal => {
-                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
                 });
             });
         });
@@ -60,7 +59,7 @@ class AdminPanel {
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
-                    modal.classList.add('hidden');
+                    modal.style.display = 'none';
                 }
             });
         });
@@ -75,26 +74,19 @@ class AdminPanel {
     }
     
     showLogin() {
-        const loginScreen = document.getElementById('loginScreen');
-        const dashboard = document.getElementById('dashboard');
-        
-        if (loginScreen) loginScreen.style.display = 'flex';
-        if (dashboard) dashboard.classList.add('hidden');
+        document.getElementById('loginScreen').style.display = 'block';
+        document.getElementById('dashboard').style.display = 'none';
     }
     
     showDashboard() {
-        const loginScreen = document.getElementById('loginScreen');
-        const dashboard = document.getElementById('dashboard');
-        
-        if (loginScreen) loginScreen.style.display = 'none';
-        if (dashboard) dashboard.classList.remove('hidden');
-        
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
         this.loadData();
     }
     
     async login() {
-        const username = document.getElementById('username')?.value;
-        const password = document.getElementById('password')?.value;
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
         const errorEl = document.getElementById('loginError');
         
         if (!username || !password) {
@@ -103,7 +95,7 @@ class AdminPanel {
         }
         
         try {
-            const response = await fetch(`${this.baseUrl}/login`, {
+            const response = await fetch(`${this.baseUrl}/api/login`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -117,11 +109,7 @@ class AdminPanel {
                 this.token = data.token;
                 localStorage.setItem('admin_token', this.token);
                 
-                const usernameDisplay = document.getElementById('usernameDisplay');
-                if (usernameDisplay) {
-                    usernameDisplay.textContent = data.user.username;
-                }
-                
+                document.getElementById('usernameDisplay').textContent = data.user.username;
                 this.showDashboard();
                 this.showToast('Đăng nhập thành công');
             } else {
@@ -144,10 +132,7 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                const usernameDisplay = document.getElementById('usernameDisplay');
-                if (usernameDisplay) {
-                    usernameDisplay.textContent = data.data.user.username;
-                }
+                document.getElementById('usernameDisplay').textContent = data.user.username;
                 this.showDashboard();
             } else {
                 this.showLogin();
@@ -159,6 +144,13 @@ class AdminPanel {
     }
     
     logout() {
+        fetch(`${this.baseUrl}/api/logout`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.token}`
+            }
+        });
+        
         localStorage.removeItem('admin_token');
         this.token = null;
         this.showLogin();
@@ -176,14 +168,11 @@ class AdminPanel {
     async loadKeys() {
         const tableBody = document.getElementById('keysTableBody');
         const loading = document.getElementById('loading');
-        const table = document.getElementById('keysTable');
         const noData = document.getElementById('noData');
         
-        if (!tableBody || !loading || !table || !noData) return;
-        
-        loading.classList.remove('hidden');
-        table.classList.add('hidden');
-        noData.classList.add('hidden');
+        if (loading) loading.style.display = 'block';
+        if (noData) noData.style.display = 'none';
+        if (tableBody) tableBody.innerHTML = '';
         
         try {
             const response = await fetch(`${this.baseUrl}/api/keys`, {
@@ -198,11 +187,8 @@ class AdminPanel {
                 this.keys = data.data;
                 this.renderKeys(this.keys);
                 
-                if (this.keys.length > 0) {
-                    table.classList.remove('hidden');
-                    noData.classList.add('hidden');
-                } else {
-                    noData.classList.remove('hidden');
+                if (this.keys.length === 0 && noData) {
+                    noData.style.display = 'block';
                 }
             } else {
                 this.showToast('Lỗi khi tải dữ liệu keys');
@@ -211,7 +197,7 @@ class AdminPanel {
             console.error('Error loading keys:', error);
             this.showToast('Lỗi kết nối khi tải keys');
         } finally {
-            loading.classList.add('hidden');
+            if (loading) loading.style.display = 'none';
         }
     }
     
@@ -239,16 +225,16 @@ class AdminPanel {
                 </td>
                 <td>${createdDate}</td>
                 <td class="action-cell">
-                    <button class="btn-icon view" onclick="admin.viewKey(${key.id})" title="Xem chi tiết">
+                    <button class="btn-icon" onclick="admin.viewKey(${key.id})" title="Xem chi tiết">
                         <i class="fas fa-eye"></i>
                     </button>
-                    <button class="btn-icon reset" onclick="admin.resetKey(${key.id})" title="Reset API Key">
+                    <button class="btn-icon" onclick="admin.resetKey(${key.id})" title="Reset API Key">
                         <i class="fas fa-redo"></i>
                     </button>
-                    <button class="btn-icon lock" onclick="admin.toggleLock(${key.id})" title="${key.status === 'active' ? 'Lock' : 'Unlock'}">
+                    <button class="btn-icon" onclick="admin.toggleLock(${key.id})" title="${key.status === 'active' ? 'Lock' : 'Unlock'}">
                         <i class="fas ${key.status === 'active' ? 'fa-lock' : 'fa-unlock'}"></i>
                     </button>
-                    <button class="btn-icon delete" onclick="admin.deleteKey(${key.id})" title="Xóa">
+                    <button class="btn-icon" onclick="admin.deleteKey(${key.id})" title="Xóa">
                         <i class="fas fa-trash"></i>
                     </button>
                 </td>
@@ -272,7 +258,7 @@ class AdminPanel {
                 document.getElementById('totalKeys').textContent = data.data.total_keys || 0;
                 document.getElementById('activeKeys').textContent = data.data.active_keys || 0;
                 document.getElementById('lockedKeys').textContent = data.data.locked_keys || 0;
-                document.getElementById('totalActivity').textContent = data.data.recent_activity || 0;
+                document.getElementById('recentActivity').textContent = data.data.recent_activity || 0;
             }
         } catch (error) {
             console.error('Error loading stats:', error);
@@ -297,7 +283,7 @@ class AdminPanel {
             }
         } catch (error) {
             console.error('Error loading activity:', error);
-            activityList.innerHTML = '<div class="error">Lỗi tải hoạt động</div>';
+            activityList.innerHTML = '<div class="activity-item">Lỗi tải hoạt động</div>';
         }
     }
     
@@ -306,25 +292,25 @@ class AdminPanel {
         if (!activityList) return;
         
         if (!activities || activities.length === 0) {
-            activityList.innerHTML = '<div class="no-activity">Không có hoạt động nào</div>';
+            activityList.innerHTML = '<div class="activity-item">Không có hoạt động nào</div>';
             return;
         }
         
         activityList.innerHTML = '';
         
         activities.slice(0, 5).forEach(activity => {
-            const time = activity.performed_at 
-                ? new Date(activity.performed_at).toLocaleTimeString('vi-VN')
+            const time = activity.timestamp 
+                ? new Date(activity.timestamp).toLocaleTimeString('vi-VN')
                 : '';
-            const date = activity.performed_at 
-                ? new Date(activity.performed_at).toLocaleDateString('vi-VN')
+            const date = activity.timestamp 
+                ? new Date(activity.timestamp).toLocaleDateString('vi-VN')
                 : '';
             
             const item = document.createElement('div');
             item.className = 'activity-item';
             item.innerHTML = `
                 <div>
-                    <div class="activity-action ${activity.action?.toLowerCase()}">
+                    <div class="activity-action">
                         <i class="fas fa-${this.getActionIcon(activity.action)}"></i>
                         ${this.getActionText(activity.action)}
                     </div>
@@ -345,6 +331,8 @@ class AdminPanel {
             case 'lock': return 'lock';
             case 'unlock': return 'unlock';
             case 'delete': return 'trash';
+            case 'login': return 'sign-in-alt';
+            case 'logout': return 'sign-out-alt';
             default: return 'info-circle';
         }
     }
@@ -357,28 +345,24 @@ class AdminPanel {
             case 'lock': return 'Khóa key';
             case 'unlock': return 'Mở khóa key';
             case 'delete': return 'Xóa key';
+            case 'login': return 'Đăng nhập';
+            case 'logout': return 'Đăng xuất';
             default: return action;
         }
     }
     
     showCreateModal() {
-        const modal = document.getElementById('createModal');
-        if (modal) {
-            modal.classList.remove('hidden');
-        }
-        
-        const keyNameInput = document.getElementById('newKeyName');
-        const keyNotesInput = document.getElementById('newKeyNotes');
-        
-        if (keyNameInput) keyNameInput.value = '';
-        if (keyNotesInput) keyNotesInput.value = '';
+        document.getElementById('newKeyName').value = '';
+        document.getElementById('newKeyNotes').value = '';
+        this.showModal('createModal');
     }
     
-    hideCreateModal() {
-        const modal = document.getElementById('createModal');
-        if (modal) {
-            modal.classList.add('hidden');
-        }
+    showModal(modalId) {
+        document.getElementById(modalId).style.display = 'flex';
+    }
+    
+    hideModal(modalId) {
+        document.getElementById(modalId).style.display = 'none';
     }
     
     async createKey() {
@@ -406,7 +390,7 @@ class AdminPanel {
             const data = await response.json();
             
             if (data.success) {
-                this.hideCreateModal();
+                this.hideModal('createModal');
                 this.loadData();
                 this.showToast('Key đã được tạo thành công');
             } else {
@@ -428,7 +412,6 @@ class AdminPanel {
         this.currentKeyId = keyId;
         
         // Fill modal with key details
-        document.getElementById('detailKeyId').textContent = key.id;
         document.getElementById('detailKeyName').textContent = key.key_name;
         document.getElementById('detailServerKey').textContent = key.server_key;
         document.getElementById('detailApiKey').textContent = key.api_key;
@@ -442,10 +425,6 @@ class AdminPanel {
         document.getElementById('detailCreatedAt').textContent = key.created_at 
             ? new Date(key.created_at).toLocaleString('vi-VN')
             : 'N/A';
-            
-        document.getElementById('detailLastReset').textContent = key.last_reset_at 
-            ? new Date(key.last_reset_at).toLocaleString('vi-VN')
-            : 'Chưa reset';
             
         document.getElementById('detailNotes').textContent = key.notes || 'Không có ghi chú';
         
@@ -467,10 +446,7 @@ class AdminPanel {
         });
         
         // Show modal
-        const modal = document.getElementById('keyModal');
-        if (modal) {
-            modal.classList.remove('hidden');
-        }
+        this.showModal('keyModal');
     }
     
     async resetKey(keyId) {
@@ -490,13 +466,8 @@ class AdminPanel {
             
             if (data.success) {
                 this.loadData();
+                this.hideModal('keyModal');
                 this.showToast('Key đã được reset thành công');
-                
-                // Close key modal
-                const modal = document.getElementById('keyModal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                }
             } else {
                 this.showToast(data.error || 'Lỗi khi reset key');
             }
@@ -531,13 +502,8 @@ class AdminPanel {
             
             if (data.success) {
                 this.loadData();
+                this.hideModal('keyModal');
                 this.showToast(`Key đã được ${action} thành công`);
-                
-                // Close key modal
-                const modal = document.getElementById('keyModal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                }
             } else {
                 this.showToast(data.error || `Lỗi khi ${action} key`);
             }
@@ -564,13 +530,8 @@ class AdminPanel {
             
             if (data.success) {
                 this.loadData();
+                this.hideModal('keyModal');
                 this.showToast('Key đã được xóa thành công');
-                
-                // Close key modal
-                const modal = document.getElementById('keyModal');
-                if (modal) {
-                    modal.classList.add('hidden');
-                }
             } else {
                 this.showToast(data.error || 'Lỗi khi xóa key');
             }
@@ -627,10 +588,10 @@ class AdminPanel {
         if (!toast || !messageEl) return;
         
         messageEl.textContent = message;
-        toast.classList.remove('hidden');
+        toast.style.display = 'flex';
         
         setTimeout(() => {
-            toast.classList.add('hidden');
+            toast.style.display = 'none';
         }, 3000);
     }
     
@@ -652,9 +613,9 @@ let admin;
 document.addEventListener('DOMContentLoaded', () => {
     try {
         admin = new AdminPanel();
-        console.log('Admin Panel initialized successfully');
+        console.log('✅ Admin Panel initialized successfully');
     } catch (error) {
-        console.error('Failed to initialize Admin Panel:', error);
+        console.error('❌ Failed to initialize Admin Panel:', error);
     }
 });
 
