@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - Quản lý Server Key & API</title>
+    <title>Admin Panel - Server Key & API Manager</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/style.css">
-    <link rel="icon" type="image/x-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔑</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔑</text></svg>">
 </head>
 <body>
     <!-- Login Screen -->
-    <div id="loginScreen" class="login-container">
-        <div class="login-box">
+    <div id="loginScreen" class="container">
+        <div class="login-card">
             <div class="login-header">
                 <i class="fas fa-key fa-3x"></i>
                 <h1>Admin Panel</h1>
@@ -23,37 +23,37 @@
                     <label for="username">
                         <i class="fas fa-user"></i> Username
                     </label>
-                    <input type="text" id="username" placeholder="admin" value="admin">
+                    <input type="text" id="username" placeholder="admin" autocomplete="username">
                 </div>
                 
                 <div class="form-group">
                     <label for="password">
                         <i class="fas fa-lock"></i> Password
                     </label>
-                    <input type="password" id="password" placeholder="••••••••" value="admin123">
+                    <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
                 </div>
                 
-                <button id="loginBtn" class="btn-login">
+                <button id="loginBtn" class="btn btn-primary">
                     <i class="fas fa-sign-in-alt"></i> Đăng nhập
                 </button>
                 
-                <div id="loginError" class="error-message"></div>
+                <div id="loginError" class="alert alert-error" style="display: none;"></div>
                 
                 <div class="login-info">
-                    <p><i class="fas fa-info-circle"></i> Thông tin mặc định: admin / admin123</p>
-                    <p><i class="fas fa-exclamation-triangle"></i> Vui lòng đổi password trong production!</p>
+                    <p><i class="fas fa-info-circle"></i> Mặc định: admin / admin123</p>
+                    <p><i class="fas fa-exclamation-triangle"></i> Đổi password trong production!</p>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Main Dashboard (hidden until login) -->
-    <div id="dashboard" class="dashboard-container hidden">
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="container" style="display: none;">
         <!-- Header -->
-        <header class="dashboard-header">
+        <header class="header">
             <div class="header-left">
-                <h1><i class="fas fa-key"></i> Admin Panel</h1>
-                <p class="subtitle">Quản lý Server Key & API Key</p>
+                <h1><i class="fas fa-key"></i> Key Manager</h1>
+                <p class="subtitle">Quản lý Server Key & API Key chuyên nghiệp</p>
             </div>
             
             <div class="header-right">
@@ -61,7 +61,7 @@
                     <i class="fas fa-user-circle"></i>
                     <span id="usernameDisplay">Admin</span>
                 </div>
-                <button id="logoutBtn" class="btn-secondary">
+                <button id="logoutBtn" class="btn btn-secondary">
                     <i class="fas fa-sign-out-alt"></i> Đăng xuất
                 </button>
             </div>
@@ -70,7 +70,7 @@
         <!-- Stats Cards -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-icon total">
+                <div class="stat-icon bg-blue">
                     <i class="fas fa-key"></i>
                 </div>
                 <div class="stat-content">
@@ -80,31 +80,31 @@
             </div>
             
             <div class="stat-card">
-                <div class="stat-icon active">
+                <div class="stat-icon bg-green">
                     <i class="fas fa-check-circle"></i>
                 </div>
                 <div class="stat-content">
                     <h3 id="activeKeys">0</h3>
-                    <p>Active Keys</p>
+                    <p>Active</p>
                 </div>
             </div>
             
             <div class="stat-card">
-                <div class="stat-icon locked">
+                <div class="stat-icon bg-orange">
                     <i class="fas fa-lock"></i>
                 </div>
                 <div class="stat-content">
                     <h3 id="lockedKeys">0</h3>
-                    <p>Locked Keys</p>
+                    <p>Locked</p>
                 </div>
             </div>
             
             <div class="stat-card">
-                <div class="stat-icon activity">
+                <div class="stat-icon bg-purple">
                     <i class="fas fa-history"></i>
                 </div>
                 <div class="stat-content">
-                    <h3 id="totalActivity">0</h3>
+                    <h3 id="recentActivity">0</h3>
                     <p>Hoạt động (24h)</p>
                 </div>
             </div>
@@ -112,20 +112,20 @@
 
         <!-- Action Bar -->
         <div class="action-bar">
-            <button id="createKeyBtn" class="btn-success">
+            <button id="createKeyBtn" class="btn btn-success">
                 <i class="fas fa-plus"></i> Tạo Key Mới
             </button>
             
-            <button id="refreshBtn" class="btn-secondary">
+            <button id="refreshBtn" class="btn btn-secondary">
                 <i class="fas fa-sync-alt"></i> Refresh
             </button>
             
-            <div class="search-container">
-                <input type="text" id="searchInput" placeholder="Tìm kiếm key..." autocomplete="off">
+            <div class="search-box">
                 <i class="fas fa-search"></i>
+                <input type="text" id="searchInput" placeholder="Tìm kiếm keys...">
             </div>
             
-            <select id="statusFilter" class="filter-select">
+            <select id="statusFilter" class="form-select">
                 <option value="">Tất cả trạng thái</option>
                 <option value="active">Active</option>
                 <option value="locked">Locked</option>
@@ -133,8 +133,8 @@
         </div>
 
         <!-- Keys Table -->
-        <div class="table-wrapper">
-            <table id="keysTable" class="hidden">
+        <div class="table-container">
+            <table id="keysTable">
                 <thead>
                     <tr>
                         <th>ID</th>
@@ -147,36 +147,34 @@
                     </tr>
                 </thead>
                 <tbody id="keysTableBody">
-                    <!-- Dữ liệu sẽ được thêm bằng JS -->
+                    <!-- Data will be loaded here -->
                 </tbody>
             </table>
             
-            <div id="loading" class="loading">
+            <div id="loading" class="loading-state">
                 <i class="fas fa-spinner fa-spin"></i> Đang tải dữ liệu...
             </div>
             
-            <div id="noData" class="no-data hidden">
+            <div id="noData" class="empty-state" style="display: none;">
                 <i class="fas fa-database"></i>
-                <p>Không có dữ liệu key nào</p>
-                <button id="createFirstKey" class="btn-success">
+                <p>Không có dữ liệu keys</p>
+                <button id="createFirstKey" class="btn btn-success">
                     <i class="fas fa-plus"></i> Tạo Key Đầu Tiên
                 </button>
             </div>
         </div>
 
         <!-- Activity Log -->
-        <div class="activity-section">
+        <div class="section">
             <h2><i class="fas fa-history"></i> Hoạt động gần đây</h2>
             <div class="activity-list" id="activityList">
-                <div class="loading-small">
-                    <i class="fas fa-spinner fa-spin"></i> Đang tải...
-                </div>
+                <!-- Activity logs will be loaded here -->
             </div>
         </div>
     </div>
 
     <!-- Create Key Modal -->
-    <div id="createModal" class="modal hidden">
+    <div id="createModal" class="modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
                 <h2><i class="fas fa-plus-circle"></i> Tạo Key Mới</h2>
@@ -185,22 +183,18 @@
             
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="newKeyName">
-                        <i class="fas fa-tag"></i> Tên Key *
-                    </label>
-                    <input type="text" id="newKeyName" placeholder="VD: Production Server" autocomplete="off">
+                    <label for="newKeyName"><i class="fas fa-tag"></i> Tên Key *</label>
+                    <input type="text" id="newKeyName" placeholder="VD: Production Server">
                 </div>
                 
                 <div class="form-group">
-                    <label for="newKeyNotes">
-                        <i class="fas fa-sticky-note"></i> Ghi chú
-                    </label>
-                    <textarea id="newKeyNotes" rows="3" placeholder="Mô tả về key này..." autocomplete="off"></textarea>
+                    <label for="newKeyNotes"><i class="fas fa-sticky-note"></i> Ghi chú</label>
+                    <textarea id="newKeyNotes" rows="3" placeholder="Mô tả về key này..."></textarea>
                 </div>
                 
                 <div class="modal-actions">
-                    <button id="cancelCreate" class="btn-secondary">Hủy</button>
-                    <button id="confirmCreate" class="btn-success">
+                    <button id="cancelCreate" class="btn btn-secondary">Hủy</button>
+                    <button id="confirmCreate" class="btn btn-success">
                         <i class="fas fa-check"></i> Tạo Key
                     </button>
                 </div>
@@ -209,27 +203,22 @@
     </div>
 
     <!-- Key Details Modal -->
-    <div id="keyModal" class="modal hidden">
-        <div class="modal-content wide">
+    <div id="keyModal" class="modal" style="display: none;">
+        <div class="modal-content wide-modal">
             <div class="modal-header">
                 <h2><i class="fas fa-key"></i> Chi tiết Key</h2>
                 <button class="close-modal">&times;</button>
             </div>
             
             <div class="modal-body">
-                <div class="key-info">
-                    <div class="info-row">
-                        <span class="label">ID Key:</span>
-                        <span id="detailKeyId" class="value"></span>
+                <div class="key-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Tên Key:</span>
+                        <span id="detailKeyName" class="detail-value"></span>
                     </div>
                     
-                    <div class="info-row">
-                        <span class="label">Tên Key:</span>
-                        <span id="detailKeyName" class="value"></span>
-                    </div>
-                    
-                    <div class="info-row">
-                        <span class="label">Server Key:</span>
+                    <div class="detail-row">
+                        <span class="detail-label">Server Key:</span>
                         <div class="copy-field">
                             <code id="detailServerKey"></code>
                             <button class="btn-copy" data-target="detailServerKey">
@@ -238,8 +227,8 @@
                         </div>
                     </div>
                     
-                    <div class="info-row">
-                        <span class="label">API Key:</span>
+                    <div class="detail-row">
+                        <span class="detail-label">API Key:</span>
                         <div class="copy-field">
                             <code id="detailApiKey"></code>
                             <button class="btn-copy" data-target="detailApiKey">
@@ -248,35 +237,30 @@
                         </div>
                     </div>
                     
-                    <div class="info-row">
-                        <span class="label">Trạng thái:</span>
+                    <div class="detail-row">
+                        <span class="detail-label">Trạng thái:</span>
                         <span id="detailStatus" class="status-badge"></span>
                     </div>
                     
-                    <div class="info-row">
-                        <span class="label">Ngày tạo:</span>
-                        <span id="detailCreatedAt" class="value"></span>
+                    <div class="detail-row">
+                        <span class="detail-label">Ngày tạo:</span>
+                        <span id="detailCreatedAt" class="detail-value"></span>
                     </div>
                     
-                    <div class="info-row">
-                        <span class="label">Lần reset cuối:</span>
-                        <span id="detailLastReset" class="value"></span>
-                    </div>
-                    
-                    <div class="info-row">
-                        <span class="label">Ghi chú:</span>
-                        <span id="detailNotes" class="value"></span>
+                    <div class="detail-row">
+                        <span class="detail-label">Ghi chú:</span>
+                        <span id="detailNotes" class="detail-value"></span>
                     </div>
                 </div>
                 
                 <div class="modal-actions">
-                    <button id="resetKeyBtn" class="btn-warning">
+                    <button id="resetKeyBtn" class="btn btn-warning">
                         <i class="fas fa-redo"></i> Reset API Key
                     </button>
-                    <button id="toggleLockBtn" class="btn-secondary">
+                    <button id="toggleLockBtn" class="btn btn-secondary">
                         <i class="fas fa-lock"></i> Lock/Unlock
                     </button>
-                    <button id="deleteKeyBtn" class="btn-danger">
+                    <button id="deleteKeyBtn" class="btn btn-danger">
                         <i class="fas fa-trash"></i> Xóa Key
                     </button>
                 </div>
@@ -285,7 +269,7 @@
     </div>
 
     <!-- Toast Notification -->
-    <div id="toast" class="toast hidden">
+    <div id="toast" class="toast" style="display: none;">
         <i class="fas fa-check-circle"></i>
         <span id="toastMessage"></span>
     </div>
