@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import secrets
 import jwt
 from config import Config
-from database import get_db, init_database
+from database import get_db, init_database, check_db_connection
 from auth import login_required, generate_token, verify_token
 import json
 
@@ -14,15 +14,11 @@ app = Flask(__name__, static_folder='.')
 app.config.from_object(Config)
 CORS(app)
 
-# Khởi tạo database
-init_database()
-
 # ==================== Routes ====================
 
 @app.route('/')
-@login_required
 def index():
-    """Render admin panel"""
+    """Render admin panel - KHÔNG yêu cầu login ở trang chủ"""
     return render_template('admin.html')
 
 @app.route('/login', methods=['POST'])
@@ -90,6 +86,13 @@ def get_keys():
     """Lấy danh sách tất cả keys"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({
+                'success': False, 
+                'error': 'Database không khả dụng',
+                'data': []
+            })
+        
         cursor = conn.cursor()
         
         # Lấy tham số filter
@@ -144,27 +147,30 @@ def get_keys():
         stats = cursor.fetchone()
         
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
             'data': keys_list,
             'stats': {
-                'total': stats[0],
-                'active': stats[1],
-                'locked': stats[2]
+                'total': stats[0] if stats else 0,
+                'active': stats[1] if stats else 0,
+                'locked': stats[2] if stats else 0
             }
         })
         
     except Exception as e:
         print(f"Get keys error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Internal server error', 'data': []}), 500
 
 @app.route('/api/keys', methods=['POST'])
 @login_required
 def create_key():
     """Tạo key mới"""
     try:
+        conn = get_db()
+        if conn is None:
+            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'error': 'Invalid JSON'}), 400
@@ -179,7 +185,6 @@ def create_key():
         server_key = f"sk_{secrets.token_hex(24)}"
         api_key = f"api_{secrets.token_hex(32)}"
         
-        conn = get_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -198,7 +203,6 @@ def create_key():
         
         conn.commit()
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -224,6 +228,9 @@ def reset_key(key_id):
     """Reset API key"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        
         cursor = conn.cursor()
         
         # Kiểm tra key tồn tại
@@ -232,7 +239,6 @@ def reset_key(key_id):
         
         if not key:
             cursor.close()
-            conn.close()
             return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
         
         # Tạo API key mới
@@ -255,7 +261,6 @@ def reset_key(key_id):
         
         conn.commit()
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -279,6 +284,9 @@ def toggle_lock(key_id):
     """Lock/Unlock key"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        
         cursor = conn.cursor()
         
         # Kiểm tra key tồn tại
@@ -287,7 +295,6 @@ def toggle_lock(key_id):
         
         if not key:
             cursor.close()
-            conn.close()
             return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
         
         # Chuyển đổi trạng thái
@@ -311,7 +318,6 @@ def toggle_lock(key_id):
         
         conn.commit()
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -333,6 +339,9 @@ def delete_key(key_id):
     """Xóa key"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        
         cursor = conn.cursor()
         
         # Kiểm tra key tồn tại
@@ -341,7 +350,6 @@ def delete_key(key_id):
         
         if not key:
             cursor.close()
-            conn.close()
             return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
         
         # Lưu thông tin trước khi xóa
@@ -354,7 +362,6 @@ def delete_key(key_id):
         if not deleted_id:
             conn.rollback()
             cursor.close()
-            conn.close()
             return jsonify({'success': False, 'error': 'Xóa key thất bại'}), 500
         
         # Ghi log
@@ -365,7 +372,6 @@ def delete_key(key_id):
         
         conn.commit()
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -383,6 +389,12 @@ def get_activity():
     """Lấy lịch sử hoạt động"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({
+                'success': True,
+                'data': []
+            })
+        
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -407,7 +419,6 @@ def get_activity():
             })
         
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -416,7 +427,7 @@ def get_activity():
         
     except Exception as e:
         print(f"Get activity error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Internal server error', 'data': []}), 500
 
 @app.route('/api/stats', methods=['GET'])
 @login_required
@@ -424,6 +435,18 @@ def get_stats():
     """Lấy thống kê"""
     try:
         conn = get_db()
+        if conn is None:
+            return jsonify({
+                'success': True,
+                'data': {
+                    'total_keys': 0,
+                    'active_keys': 0,
+                    'locked_keys': 0,
+                    'total_resets': 0,
+                    'recent_activity': 0
+                }
+            })
+        
         cursor = conn.cursor()
         
         # Thống kê cơ bản
@@ -448,7 +471,6 @@ def get_stats():
         recent = cursor.fetchone()
         
         cursor.close()
-        conn.close()
         
         return jsonify({
             'success': True,
@@ -463,18 +485,30 @@ def get_stats():
         
     except Exception as e:
         print(f"Get stats error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({
+            'success': True,
+            'data': {
+                'total_keys': 0,
+                'active_keys': 0,
+                'locked_keys': 0,
+                'total_resets': 0,
+                'recent_activity': 0
+            }
+        })
 
 @app.route('/api/validate', methods=['GET'])
 def validate_key():
     """Kiểm tra key hợp lệ (public endpoint)"""
     try:
+        conn = get_db()
+        if conn is None:
+            return jsonify({'success': False, 'error': 'Database không khả dụng'}), 503
+        
         key = request.args.get('key')
         
         if not key:
             return jsonify({'success': False, 'error': 'Thiếu tham số key'}), 400
         
-        conn = get_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -485,7 +519,6 @@ def validate_key():
         
         key_data = cursor.fetchone()
         cursor.close()
-        conn.close()
         
         if not key_data:
             return jsonify({'success': False, 'error': 'Key không tồn tại'}), 404
@@ -516,23 +549,29 @@ def validate_key():
 def health_check():
     """Health check endpoint"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        cursor.close()
-        conn.close()
-        db_status = 'connected'
+        db_status, db_message = check_db_connection()
+        
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'database': {
+                'connected': db_status,
+                'message': db_message
+            },
+            'service': 'Admin Panel API',
+            'version': '1.0.1',
+            'endpoints': {
+                'api': 'available',
+                'frontend': 'available'
+            }
+        })
     except Exception as e:
-        db_status = f'error: {str(e)}'
-    
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'database': db_status,
-        'service': 'Admin Panel API',
-        'version': '1.0.0'
-    })
+        return jsonify({
+            'status': 'degraded',
+            'timestamp': datetime.now().isoformat(),
+            'error': str(e),
+            'service': 'Admin Panel API'
+        }), 500
 
 # ==================== Static Files ====================
 
@@ -554,8 +593,44 @@ def not_found(error):
 def internal_error(error):
     return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
+# ==================== Application Startup ====================
+
+def initialize_app():
+    """Khởi tạo ứng dụng sau khi startup"""
+    print("🚀 Đang khởi động Admin Panel...")
+    print(f"📁 Environment: {app.config.get('ENVIRONMENT', 'development')}")
+    
+    # Khởi tạo database (non-blocking)
+    try:
+        init_database()
+        print("✅ Database initialized successfully")
+    except Exception as e:
+        print(f"⚠️  Database initialization warning: {e}")
+        print("Ứng dụng vẫn sẽ chạy nhưng có thể có giới hạn chức năng")
+
 # ==================== Run App ====================
 
 if __name__ == '__main__':
+    # Khởi tạo ứng dụng
+    initialize_app()
+    
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('FLASK_ENV') != 'production')
+    print(f"🌐 Server sẽ chạy trên port: {port}")
+    
+    # Chỉ chạy debug mode trong development
+    debug_mode = os.environ.get('FLASK_ENV') != 'production'
+    
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+else:
+    # Khi chạy với gunicorn, khởi tạo sau khi import
+    import threading
+    import time
+    
+    def delayed_init():
+        """Khởi tạo database sau 2 giây để đảm bảo app đã sẵn sàng"""
+        time.sleep(2)
+        initialize_app()
+    
+    # Chạy initialization trong thread riêng
+    init_thread = threading.Thread(target=delayed_init, daemon=True)
+    init_thread.start()
