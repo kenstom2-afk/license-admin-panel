@@ -7,7 +7,7 @@ import io
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, inspect
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, inspect, ForeignKeyConstraint  # <-- THÊM ForeignKeyConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -92,7 +92,7 @@ class LicenseActivation(Base):
     activated_at = Column(DateTime, default=datetime.utcnow)
     last_used = Column(DateTime, nullable=True)
     
-    # Composite unique constraint
+    # ĐÃ SỬA: ForeignKeyConstraint đã được import
     __table_args__ = (ForeignKeyConstraint(['license_key'], ['licenses.license_key']),)
 
 # Create all tables
@@ -104,6 +104,30 @@ def get_db_session():
     db = SessionLocal()
     try:
         return db
+    finally:
+        db.close()
+
+def validate_api_key():
+    """Validate API key from request headers"""
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return False, "No API key provided"
+    
+    db = get_db_session()
+    try:
+        key_record = db.query(APIKey).filter(
+            APIKey.key == api_key,
+            APIKey.is_active == True
+        ).first()
+        
+        if key_record:
+            # Update last used timestamp
+            key_record.last_used = datetime.utcnow()
+            db.commit()
+            return True, "Valid API key"
+        return False, "Invalid or inactive API key"
+    except Exception as e:
+        return False, f"Error validating API key: {str(e)}"
     finally:
         db.close()
 
