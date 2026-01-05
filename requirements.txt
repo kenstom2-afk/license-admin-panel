@@ -1,7 +1,7 @@
-Flask==2.3.3
+Flask==3.0.0
 Flask-CORS==4.0.0
-psycopg2-binary==2.9.7
-python-dotenv==1.0.0
+psycopg==3.1.18          # Thay psycopg2-binary bằng psycopg (psycopg3)
 PyJWT==2.8.0
-cryptography==41.0.4
+python-dotenv==1.0.0
 gunicorn==21.2.0
+cryptography==42.0.5
