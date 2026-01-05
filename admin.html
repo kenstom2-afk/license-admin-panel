@@ -790,6 +790,15 @@
                                             </div>
                                         </div>
 
+                                        <!-- Premium Format (placeholder) -->
+                                        <div id="premiumKeySection" style="display: none;">
+                                            <div class="alert alert-info bg-dark-light border-light">
+                                                <i class="bi bi-star-fill"></i>
+                                                <strong>Premium Format</strong>
+                                                <p class="mb-0 mt-1">Premium keys with enhanced security features. Coming soon!</p>
+                                            </div>
+                                        </div>
+
                                         <!-- Additional Options -->
                                         <div class="mb-3">
                                             <label for="licenseNote" class="form-label">Note (Optional)</label>
@@ -1103,7 +1112,7 @@ Content-Type: application/json
                                     </div>
                                     <pre id="codeExample"><code>import requests
 
-api_url = "''' + window.location.origin + '''/api/client/validate"
+api_url = "${window.location.origin}/api/client/validate"
 license_key = "YOUR_LICENSE_KEY"
 hwid = "device_unique_id"
 
@@ -1209,6 +1218,22 @@ else:
             document.getElementById('autoKeySection').style.display = keyType === 'auto' ? 'block' : 'none';
             document.getElementById('customKeySection').style.display = keyType === 'custom' ? 'block' : 'none';
             document.getElementById('bulkKeySection').style.display = keyType === 'bulk' ? 'block' : 'none';
+            document.getElementById('premiumKeySection').style.display = keyType === 'premium' ? 'block' : 'none';
+            
+            // Update form validation
+            if (keyType === 'custom') {
+                document.getElementById('customKey').required = true;
+            } else {
+                document.getElementById('customKey').required = false;
+            }
+            
+            if (keyType === 'bulk') {
+                document.getElementById('keyCount').required = true;
+                document.getElementById('bulkPrefix').required = true;
+            } else {
+                document.getElementById('keyCount').required = false;
+                document.getElementById('bulkPrefix').required = false;
+            }
         }
 
         // ============== SYSTEM FUNCTIONS ==============
@@ -1218,17 +1243,21 @@ else:
                 const data = await response.json();
                 
                 const statusDiv = document.getElementById('systemStatus');
-                if (data.counts.api_keys > 0) {
-                    statusDiv.innerHTML = `<span class="text-success">✅ System Ready (${data.counts.api_keys} API keys)</span>`;
+                if (data.status === 'online') {
+                    statusDiv.innerHTML = `<span class="text-success">✅ System Ready (PostgreSQL)</span>`;
                     document.getElementById('apiStatus').textContent = 'API: Ready';
+                    document.getElementById('apiStatus').className = 'badge bg-success';
                 } else {
-                    statusDiv.innerHTML = `<span class="text-danger">❌ No API keys found</span>`;
-                    document.getElementById('apiStatus').textContent = 'API: Not Ready';
+                    statusDiv.innerHTML = `<span class="text-danger">❌ System Error</span>`;
+                    document.getElementById('apiStatus').textContent = 'API: Error';
+                    document.getElementById('apiStatus').className = 'badge bg-danger';
                 }
                 return data;
             } catch (error) {
                 document.getElementById('systemStatus').innerHTML = 
                     `<span class="text-danger">❌ Error: ${error.message}</span>`;
+                document.getElementById('apiStatus').textContent = 'API: Offline';
+                document.getElementById('apiStatus').className = 'badge bg-danger';
                 return null;
             }
         }
@@ -1282,6 +1311,7 @@ else:
                     loadStats();
                 } else {
                     localStorage.removeItem('license_admin_api_key');
+                    showToast('Session expired. Please login again.', 'warning');
                 }
             } catch (error) {
                 localStorage.removeItem('license_admin_api_key');
@@ -1321,10 +1351,10 @@ else:
                 const stats = await apiRequest('/api/admin/stats');
                 if (!stats) return;
                 
-                document.getElementById('totalLicenses').textContent = stats.total_licenses || 0;
-                document.getElementById('activeLicenses').textContent = stats.active_licenses || 0;
-                document.getElementById('lockedLicenses').textContent = stats.locked_licenses || 0;
-                document.getElementById('expiredLicenses').textContent = stats.expired_licenses || 0;
+                document.getElementById('totalLicenses').textContent = stats.stats.total_licenses || 0;
+                document.getElementById('activeLicenses').textContent = stats.stats.active_licenses || 0;
+                document.getElementById('lockedLicenses').textContent = stats.stats.locked_licenses || 0;
+                document.getElementById('expiredLicenses').textContent = stats.stats.expired_licenses || 0;
                 loadRecentLicenses();
             } catch (error) {
                 console.error('Error loading stats:', error);
@@ -1340,21 +1370,33 @@ else:
             const options = { method, headers };
             if (body) options.body = JSON.stringify(body);
             
-            const response = await fetch(API_BASE + endpoint, options);
-            if (response.status === 401) {
-                showToast('Invalid API key', 'danger');
-                logout();
-                return null;
+            try {
+                const response = await fetch(API_BASE + endpoint, options);
+                
+                if (response.status === 401) {
+                    showToast('Invalid API key', 'danger');
+                    logout();
+                    return null;
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API Request Error:', error);
+                showToast(`API Error: ${error.message}`, 'danger');
+                throw error;
             }
-            return await response.json();
         }
 
         async function loadRecentLicenses() {
             try {
-                const licenses = await apiRequest('/api/admin/licenses');
-                if (!licenses) return;
+                const result = await apiRequest('/api/admin/licenses');
+                if (!result || !result.success) return;
                 
-                LICENSES = licenses.licenses || [];
+                LICENSES = result.licenses || [];
                 const table = document.getElementById('recentLicenses');
                 table.innerHTML = '';
                 
@@ -1395,8 +1437,15 @@ else:
             const keyType = document.getElementById('keyType').value;
             const daysValid = parseInt(document.getElementById('daysValid').value) || 30;
             const note = document.getElementById('licenseNote').value;
+            const allowMultipleDevices = document.getElementById('allowMultipleDevices').checked;
+            const autoActivate = document.getElementById('autoActivate').checked;
             
-            let requestData = { days_valid: daysValid, note: note };
+            let requestData = { 
+                days_valid: daysValid, 
+                note: note,
+                allow_multiple_devices: allowMultipleDevices,
+                auto_activate: autoActivate
+            };
             
             if (keyType === 'custom') {
                 const customKey = document.getElementById('customKey').value.trim().toUpperCase();
@@ -1409,27 +1458,29 @@ else:
                     return;
                 }
                 requestData.custom_key = customKey;
+                requestData.key_type = 'custom';
             } else if (keyType === 'bulk') {
                 const count = parseInt(document.getElementById('keyCount').value) || 5;
                 const prefix = document.getElementById('bulkPrefix').value.trim().toUpperCase() || 'BULK';
+                const formatType = document.getElementById('keyFormat').value;
+                
                 if (count < 1 || count > 100) {
                     showToast('Count must be between 1-100', 'warning');
                     return;
                 }
-                requestData.count = count;
-                requestData.prefix = prefix;
-            } else if (keyType === 'auto') {
-                const prefix = document.getElementById('keyPrefix').value.trim().toUpperCase() || 'LIC';
-                requestData.prefix = prefix;
-            }
-            
-            try {
-                const endpoint = keyType === 'bulk' ? '/api/admin/licenses/bulk' : '/api/admin/licenses/create';
-                const result = await apiRequest(endpoint, 'POST', requestData);
                 
-                if (result?.success) {
-                    const resultDiv = document.getElementById('createResult');
-                    if (keyType === 'bulk') {
+                try {
+                    const result = await apiRequest('/api/admin/licenses/bulk', 'POST', {
+                        count: count,
+                        days_valid: daysValid,
+                        prefix: prefix,
+                        note: note,
+                        format_type: formatType,
+                        allow_multiple_devices: allowMultipleDevices
+                    });
+                    
+                    if (result?.success) {
+                        const resultDiv = document.getElementById('createResult');
                         resultDiv.innerHTML = `
                             <div class="alert alert-success">
                                 <h6><i class="bi bi-check-circle me-2"></i> ${result.count} Licenses Created!</h6>
@@ -1448,20 +1499,42 @@ else:
                                 </button>
                             </div>
                         `;
+                        loadStats();
+                        showToast('✅ ' + result.message, 'success');
                     } else {
-                        resultDiv.innerHTML = `
-                            <div class="alert alert-success">
-                                <h6><i class="bi bi-check-circle me-2"></i> License Created Successfully!</h6>
-                                <p><strong>License Key:</strong> <code class="license-key">${result.license_key}</code></p>
-                                <p><strong>Expires:</strong> ${formatDate(result.expires_at)}</p>
-                                <button class="btn btn-success" onclick="copyToClipboard('${result.license_key}')">
-                                    <i class="bi bi-copy me-1"></i>Copy License Key
-                                </button>
-                            </div>
-                        `;
+                        showToast(`❌ Failed: ${result.error || 'Unknown error'}`, 'danger');
                     }
+                } catch (error) {
+                    showToast(`⚠️ Error: ${error.message}`, 'danger');
+                }
+                return;
+            } else {
+                // Auto-generated or premium
+                const prefix = document.getElementById('keyPrefix').value.trim().toUpperCase() || 'LIC';
+                const formatType = document.getElementById('keyFormat').value;
+                requestData.prefix = prefix;
+                requestData.format_type = formatType;
+                requestData.key_type = keyType;
+            }
+            
+            try {
+                const result = await apiRequest('/api/admin/licenses/create', 'POST', requestData);
+                
+                if (result?.success) {
+                    const resultDiv = document.getElementById('createResult');
+                    resultDiv.innerHTML = `
+                        <div class="alert alert-success">
+                            <h6><i class="bi bi-check-circle me-2"></i> License Created Successfully!</h6>
+                            <p><strong>License Key:</strong> <code class="license-key">${result.license_key}</code></p>
+                            <p><strong>Type:</strong> ${result.key_type || 'auto'}</p>
+                            <p><strong>Expires:</strong> ${formatDate(result.expires_at)}</p>
+                            <button class="btn btn-success" onclick="copyToClipboard('${result.license_key}')">
+                                <i class="bi bi-copy me-1"></i>Copy License Key
+                            </button>
+                        </div>
+                    `;
                     loadStats();
-                    showToast('✅ License(s) created!', 'success');
+                    showToast('✅ License created!', 'success');
                 } else {
                     showToast(`❌ Failed: ${result.error || 'Unknown error'}`, 'danger');
                 }
@@ -1472,10 +1545,10 @@ else:
 
         async function loadAllLicenses() {
             try {
-                const licenses = await apiRequest('/api/admin/licenses');
-                if (!licenses) return;
+                const result = await apiRequest('/api/admin/licenses');
+                if (!result || !result.success) return;
                 
-                LICENSES = licenses.licenses || [];
+                LICENSES = result.licenses || [];
                 TOTAL_ITEMS = LICENSES.length;
                 renderLicensesTable();
                 updatePagination();
@@ -1528,25 +1601,31 @@ else:
             return LICENSES.filter(license => {
                 // Status filter
                 if (statusFilter) {
-                    if (statusFilter === 'active' && (license.is_locked || license.status !== 'active')) return false;
-                    if (statusFilter === 'locked' && !license.is_locked) return false;
-                    if (statusFilter === 'expired' && license.expires_at && new Date(license.expires_at) > new Date()) return false;
+                    const actualStatus = license.actual_status || license.status;
+                    if (statusFilter === 'active' && actualStatus !== 'active') return false;
+                    if (statusFilter === 'locked' && actualStatus !== 'locked') return false;
+                    if (statusFilter === 'expired' && actualStatus !== 'expired') return false;
                 }
                 
                 // Type filter
                 if (typeFilter && license.key_type !== typeFilter) return false;
                 
                 // Date filter
-                if (dateFilter) {
+                if (dateFilter && license.created_at) {
                     const created = new Date(license.created_at);
                     const now = new Date();
-                    if (dateFilter === 'today' && created.toDateString() !== now.toDateString()) return false;
+                    
+                    if (dateFilter === 'today') {
+                        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                        const createdDate = new Date(created.getFullYear(), created.getMonth(), created.getDate());
+                        if (createdDate.getTime() !== today.getTime()) return false;
+                    }
                     if (dateFilter === 'week') {
-                        const weekAgo = new Date(now.setDate(now.getDate() - 7));
+                        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
                         if (created < weekAgo) return false;
                     }
                     if (dateFilter === 'month') {
-                        const monthAgo = new Date(now.setMonth(now.getMonth() - 1));
+                        const monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
                         if (created < monthAgo) return false;
                     }
                 }
@@ -1561,47 +1640,50 @@ else:
             updatePagination();
         }
 
-        function searchLicenses() {
-            const query = document.getElementById('searchInput').value.toLowerCase();
+        async function searchLicenses() {
+            const query = document.getElementById('searchInput').value.trim();
             if (!query) {
                 filterLicenses();
                 return;
             }
             
-            const filtered = LICENSES.filter(license => 
-                license.license_key.toLowerCase().includes(query) ||
-                (license.hwid && license.hwid.toLowerCase().includes(query)) ||
-                (license.note && license.note.toLowerCase().includes(query))
-            );
-            
-            const table = document.getElementById('allLicensesTable');
-            table.innerHTML = '';
-            
-            if (filtered.length === 0) {
-                table.innerHTML = '<tr><td colspan="6" class="text-center py-4">No matching licenses found</td></tr>';
-                return;
+            try {
+                const result = await apiRequest('/api/admin/licenses/search', 'POST', { query: query });
+                if (!result || !result.success) return;
+                
+                const table = document.getElementById('allLicensesTable');
+                table.innerHTML = '';
+                
+                if (result.count === 0) {
+                    table.innerHTML = '<tr><td colspan="6" class="text-center py-4">No matching licenses found</td></tr>';
+                    document.getElementById('licenseCount').textContent = '0 licenses found';
+                    return;
+                }
+                
+                result.licenses.forEach(license => {
+                    const statusBadge = getStatusBadge(license);
+                    const row = table.insertRow();
+                    row.innerHTML = `
+                        <td><code class="license-key-small">${license.license_key}</code></td>
+                        <td><small class="text-muted">${license.hwid || 'Not activated'}</small></td>
+                        <td>${statusBadge}</td>
+                        <td>${formatDate(license.created_at)}</td>
+                        <td>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</td>
+                        <td>
+                            <div class="btn-group-actions">
+                                <button class="btn btn-sm btn-outline" onclick="showLicenseActions('${license.license_key}')">
+                                    <i class="bi bi-gear"></i>
+                                </button>
+                            </div>
+                        </td>
+                    `;
+                });
+                
+                document.getElementById('licenseCount').textContent = `${result.count} licenses found`;
+            } catch (error) {
+                console.error('Search error:', error);
+                showToast('Search error: ' + error.message, 'danger');
             }
-            
-            filtered.forEach(license => {
-                const statusBadge = getStatusBadge(license);
-                const row = table.insertRow();
-                row.innerHTML = `
-                    <td><code class="license-key-small">${license.license_key}</code></td>
-                    <td><small class="text-muted">${license.hwid || 'Not activated'}</small></td>
-                    <td>${statusBadge}</td>
-                    <td>${formatDate(license.created_at)}</td>
-                    <td>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</td>
-                    <td>
-                        <div class="btn-group-actions">
-                            <button class="btn btn-sm btn-outline" onclick="showLicenseActions('${license.license_key}')">
-                                <i class="bi bi-gear"></i>
-                            </button>
-                        </div>
-                    </td>
-                `;
-            });
-            
-            document.getElementById('licenseCount').textContent = `${filtered.length} licenses found`;
         }
 
         // ============== LICENSE ACTIONS ==============
@@ -1622,6 +1704,9 @@ else:
                     </button>
                     <button class="btn btn-danger" onclick="performLicenseAction('lock')">
                         <i class="bi bi-lock me-2"></i> Lock License
+                    </button>
+                    <button class="btn btn-outline-warning" onclick="performLicenseAction('unlock')">
+                        <i class="bi bi-unlock me-2"></i> Unlock License
                     </button>
                     <button class="btn btn-danger" onclick="performLicenseAction('delete')">
                         <i class="bi bi-trash me-2"></i> Delete License
@@ -1653,6 +1738,8 @@ else:
                                     <tr><td><strong>Expires:</strong></td><td>${license.expires_at ? formatDate(license.expires_at) : 'Never'}</td></tr>
                                     <tr><td><strong>Last Check:</strong></td><td>${license.last_check ? formatDate(license.last_check) : 'Never'}</td></tr>
                                     <tr><td><strong>Note:</strong></td><td>${license.note || 'None'}</td></tr>
+                                    <tr><td><strong>Type:</strong></td><td>${license.key_type || 'auto'}</td></tr>
+                                    <tr><td><strong>Multiple Devices:</strong></td><td>${license.allow_multiple_devices ? 'Yes' : 'No'}</td></tr>
                                 </table>
                             </div>
                         `;
@@ -1678,6 +1765,10 @@ else:
                     endpoint = '/api/admin/licenses/lock';
                     data.reason = 'Locked by admin';
                     break;
+                case 'unlock':
+                    confirmMessage = `Unlock license ${licenseKey}?`;
+                    endpoint = '/api/admin/licenses/unlock';
+                    break;
                 case 'delete':
                     confirmMessage = `Permanently delete license ${licenseKey}?`;
                     endpoint = '/api/admin/licenses/delete';
@@ -1702,7 +1793,7 @@ else:
                         loadAllLicenses();
                         modal.hide();
                     } else {
-                        showToast(`❌ Failed to ${action} license`, 'danger');
+                        showToast(`❌ Failed to ${action} license: ${result.error || 'Unknown error'}`, 'danger');
                     }
                 } catch (error) {
                     showToast(`⚠️ Error: ${error.message}`, 'danger');
@@ -1713,13 +1804,13 @@ else:
         // ============== API KEYS MANAGEMENT ==============
         async function loadApiKeys() {
             try {
-                const keys = await apiRequest('/api/admin/apikeys');
-                if (!keys) return;
+                const result = await apiRequest('/api/admin/apikeys');
+                if (!result || !result.success) return;
                 
                 const table = document.getElementById('apiKeysTable');
                 table.innerHTML = '';
                 
-                (keys.api_keys || []).forEach(key => {
+                (result.api_keys || []).forEach(key => {
                     const row = table.insertRow();
                     row.innerHTML = `
                         <td>${key.name}</td>
@@ -1764,10 +1855,32 @@ else:
             }
         }
 
+        async function regenerateApiKey() {
+            if (!confirm('Are you sure you want to regenerate your API key? The old key will be deactivated.')) {
+                return;
+            }
+            
+            try {
+                const result = await apiRequest('/api/admin/apikeys/regenerate', 'POST', { old_key: API_KEY });
+                if (result?.success) {
+                    API_KEY = result.new_api_key;
+                    localStorage.setItem('license_admin_api_key', API_KEY);
+                    document.getElementById('currentApiKey').textContent = API_KEY;
+                    alert(`✅ API Key regenerated!\n\nNew Key: ${API_KEY}\n\nSave this key now!`);
+                    copyToClipboard(API_KEY);
+                    loadApiKeys();
+                } else {
+                    showToast('Failed to regenerate API key', 'danger');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'danger');
+            }
+        }
+
         // ============== CLIENT API TESTING ==============
         async function testClientAPI() {
-            const licenseKey = document.getElementById('testLicenseKey').value;
-            const hwid = document.getElementById('testHWID').value;
+            const licenseKey = document.getElementById('testLicenseKey').value.trim();
+            const hwid = document.getElementById('testHWID').value.trim();
             
             if (!licenseKey) {
                 showToast('Please enter a license key', 'warning');
@@ -1788,7 +1901,7 @@ else:
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         license_key: licenseKey,
-                        hwid: hwid,
+                        hwid: hwid || 'test-device-123',
                         device_info: 'Test Device'
                     })
                 });
@@ -1801,6 +1914,7 @@ else:
                             <i class="bi bi-check-circle me-2"></i>
                             <strong>✅ Success!</strong> ${data.message}<br>
                             ${data.expires_at ? `<small>Expires: ${formatDate(data.expires_at)}</small>` : ''}
+                            ${data.device_count ? `<small>Devices: ${data.device_count}</small>` : ''}
                         </div>
                     `;
                 } else {
@@ -1837,13 +1951,17 @@ else:
 
         // ============== HELPER FUNCTIONS ==============
         function getStatusBadge(license) {
-            if (license.is_locked) {
+            const status = license.actual_status || license.status;
+            
+            if (license.is_locked || status === 'locked') {
                 return '<span class="badge badge-danger">Locked</span>';
-            } else if (license.status === 'active') {
+            } else if (status === 'active') {
                 if (license.expires_at && new Date(license.expires_at) < new Date()) {
                     return '<span class="badge badge-warning">Expired</span>';
                 }
                 return '<span class="badge badge-success">Active</span>';
+            } else if (status === 'expired') {
+                return '<span class="badge badge-warning">Expired</span>';
             }
             return '<span class="badge badge-warning">Inactive</span>';
         }
@@ -1903,6 +2021,31 @@ else:
             copyToClipboard(text);
         }
 
+        async function exportLicenses() {
+            try {
+                const result = await apiRequest('/api/admin/licenses/export');
+                if (!result || !result.success) {
+                    showToast('Export failed', 'danger');
+                    return;
+                }
+                
+                // Create download link
+                const blob = new Blob([result.csv_content], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `licenses_${new Date().toISOString().split('T')[0]}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                
+                showToast(`✅ Exported ${result.count} licenses`, 'success');
+            } catch (error) {
+                showToast('Export error: ' + error.message, 'danger');
+            }
+        }
+
         function showToast(message, type = 'info') {
             const toast = document.createElement('div');
             toast.className = `toast align-items-center text-white bg-${type} border-0`;
@@ -1933,25 +2076,6 @@ else:
                 checkSystemStatus();
                 showToast('Logged out successfully', 'info');
             }
-        }
-
-        function exportLicenses() {
-            const filtered = filterLicenseList();
-            if (filtered.length === 0) {
-                showToast('No licenses to export', 'warning');
-                return;
-            }
-            
-            const csv = filtered.map(license => 
-                `${license.license_key},${license.hwid || ''},${license.status},${license.created_at},${license.expires_at || ''}`
-            ).join('\n');
-            
-            const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent('License Key,HWID,Status,Created At,Expires At\n' + csv);
-            const link = document.createElement('a');
-            link.href = csvContent;
-            link.download = `licenses_${new Date().toISOString().split('T')[0]}.csv`;
-            link.click();
-            showToast('✅ Exported successfully', 'success');
         }
     </script>
 </body>
