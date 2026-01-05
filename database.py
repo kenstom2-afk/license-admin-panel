@@ -1,107 +1,73 @@
-import sqlite3
-import hashlib
-import secrets
-from datetime import datetime, timedelta
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from config import Config
+import os
 
 def get_db_connection():
-    conn = sqlite3.connect('database.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Kết nối đến PostgreSQL database"""
+    try:
+        conn = psycopg2.connect(
+            Config.DATABASE_URL,
+            cursor_factory=RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        print(f"❌ Lỗi kết nối database: {e}")
+        raise
 
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Tạo bảng admin users
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admin_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Tạo bảng licenses
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS licenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            license_key TEXT UNIQUE NOT NULL,
-            product TEXT NOT NULL,
-            owner TEXT,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at DATE,
-            max_devices INTEGER DEFAULT 1,
-            notes TEXT
-        )
-    ''')
-    
-    # Tạo bảng API keys
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            api_key TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Tạo bảng license activations
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS license_activations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            license_id INTEGER NOT NULL,
-            hwid TEXT NOT NULL,
-            ip_address TEXT,
-            activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (license_id) REFERENCES licenses (id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-def create_default_admin():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Kiểm tra xem đã có admin chưa
-    cursor.execute('SELECT * FROM admin_users WHERE username = ?', ('admin',))
-    admin = cursor.fetchone()
-    
-    if not admin:
-        # Tạo admin mặc định với mật khẩu "Anhhuy123"
-        hashed_password = hash_password("Anhhuy123")
-        cursor.execute(
-            'INSERT INTO admin_users (username, password) VALUES (?, ?)',
-            ('admin', hashed_password)
-        )
-        print("✅ Default admin user created: admin / Anhhuy123")
-    
-    conn.commit()
-    conn.close()
-
-def create_default_api_key():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Kiểm tra xem đã có API key chưa
-    cursor.execute('SELECT * FROM api_keys')
-    api_key = cursor.fetchone()
-    
-    if not api_key:
-        # Tạo API key mặc định
-        api_key = f"sk_{secrets.token_hex(16)}"
-        cursor.execute(
-            'INSERT INTO api_keys (api_key, name) VALUES (?, ?)',
-            (api_key, 'Default API Key')
-        )
-        print(f"✅ Default API Key created: {api_key[:20]}...")
-    
-    conn.commit()
-    conn.close()
+def init_database():
+    """Khởi tạo database tables"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Tạo bảng api_keys
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                key_name VARCHAR(255) NOT NULL,
+                server_key VARCHAR(512) UNIQUE NOT NULL,
+                api_key VARCHAR(512) UNIQUE NOT NULL,
+                status VARCHAR(50) DEFAULT 'active',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_reset_at TIMESTAMP
+            )
+        """)
+        
+        # Tạo bảng activity_logs
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id SERIAL PRIMARY KEY,
+                key_id INTEGER,
+                action VARCHAR(100) NOT NULL,
+                details TEXT,
+                performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ip_address VARCHAR(45)
+            )
+        """)
+        
+        # Tạo indexes
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_keys_status 
+            ON api_keys(status)
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_keys_created 
+            ON api_keys(created_at DESC)
+        """)
+        
+        conn.commit()
+        print("✅ Database tables đã được khởi tạo")
+        
+    except Exception as e:
+        print(f"❌ Lỗi khi khởi tạo database: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
